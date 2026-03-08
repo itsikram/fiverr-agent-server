@@ -711,6 +711,7 @@ export class MessageServer extends EventEmitter {
       console.log(`[DEBUG] MessageServer: Received seller_profile via WebSocket`, data);
       const profileName = (data.profileName || data.profile_name || '').trim();
       let username = (data.username || '').trim();
+      const avatarUrl = data.avatarUrl || data.avatar_url || null;
       
       if (profileName || username) {
         if (!username) {
@@ -720,6 +721,8 @@ export class MessageServer extends EventEmitter {
         const entry = {
           profileName: profileName,
           username: username,
+          avatarUrl: avatarUrl,
+          avatar_url: avatarUrl,
           updated_at: new Date().toISOString()
         };
         
