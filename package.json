@@ -1,0 +1,26 @@
+{
+  "name": "fiverr-agent-message-server",
+  "version": "1.0.0",
+  "description": "WebSocket message server for Fiverr Agent browser extension",
+  "main": "server.js",
+  "type": "module",
+  "scripts": {
+    "start": "node server.js",
+    "dev": "node server.js"
+  },
+  "keywords": [
+    "websocket",
+    "fiverr",
+    "message-server"
+  ],
+  "author": "",
+  "license": "ISC",
+  "dependencies": {
+    "ws": "^8.16.0",
+    "mongodb": "^6.3.0",
+    "dotenv": "^16.3.1"
+  },
+  "engines": {
+    "node": ">=18.0.0"
+  }
+}
