@@ -740,6 +740,11 @@ export class MessageServer extends EventEmitter {
         const currentWithOnline = { ...this.sellerProfile, online: online.has(username) };
         const profilesWithOnline = this.getSellerProfilesWithOnline();
         
+        console.log(`[DEBUG] MessageServer: Broadcasting seller_profile with avatarUrl:`, {
+          username: currentWithOnline.username,
+          avatarUrl: currentWithOnline.avatarUrl || currentWithOnline.avatar_url || 'null'
+        });
+        
         // Broadcast to Expo/desktop
         this.broadcastToExpoClients({
           type: 'seller_profile',
@@ -983,11 +988,12 @@ export class MessageServer extends EventEmitter {
           message: `Navigating to ${username}'s profile. Extraction will start shortly...`
         }));
         
-        // Wait 5 seconds then trigger extraction
+        // Wait longer for page to fully load (8 seconds) then trigger extraction
+        // The content script will also wait for page load, so this gives enough time
         setTimeout(() => {
           console.log(`[DEBUG] MessageServer: Triggering client data extraction...`);
           this.triggerClientExtraction();
-        }, 5000);
+        }, 8000);
         
       } catch (error) {
         console.log(`[ERROR] MessageServer: Error fetching client details: ${error.message}`);
@@ -1026,6 +1032,88 @@ export class MessageServer extends EventEmitter {
         type: 'ack',
         status: 'success',
         message: 'Command status received'
+      }));
+      
+    } else if (msgType === 'navigate') {
+      const url = data.url;
+      
+      if (!url) {
+        ws.send(JSON.stringify({
+          type: 'ack',
+          status: 'error',
+          message: 'URL is required for navigate command'
+        }));
+        return;
+      }
+      
+      console.log(`[DEBUG] MessageServer: Expo client requesting to navigate to: ${url}`);
+      
+      const command = {
+        type: 'navigate',
+        url: url
+      };
+      
+      // Forward to browser extension clients
+      const browserClients = Array.from(this.connectedClients.entries())
+        .filter(([sid]) => this.clientTypes.get(sid) === 'browser');
+      
+      if (browserClients.length > 0) {
+        const message = JSON.stringify({
+          type: 'commands',
+          commands: [command]
+        });
+        
+        for (const [, browserWs] of browserClients) {
+          try {
+            browserWs.send(message);
+            console.log(`[DEBUG] MessageServer: Navigate command forwarded to browser client`);
+          } catch (error) {
+            console.log(`[WARNING] MessageServer: Error forwarding navigate to browser client: ${error.message}`);
+          }
+        }
+      } else {
+        console.log(`[WARNING] MessageServer: No browser extension clients connected to forward navigate`);
+      }
+      
+      ws.send(JSON.stringify({
+        type: 'ack',
+        status: 'success',
+        message: `Navigate command sent: ${url}`
+      }));
+      
+    } else if (msgType === 'reload') {
+      console.log(`[DEBUG] MessageServer: Expo client requesting to reload activated Fiverr tab`);
+      
+      const command = {
+        type: 'reload'
+      };
+      
+      // Forward to browser extension clients
+      const browserClients = Array.from(this.connectedClients.entries())
+        .filter(([sid]) => this.clientTypes.get(sid) === 'browser');
+      
+      if (browserClients.length > 0) {
+        const message = JSON.stringify({
+          type: 'commands',
+          commands: [command]
+        });
+        
+        for (const [, browserWs] of browserClients) {
+          try {
+            browserWs.send(message);
+            console.log(`[DEBUG] MessageServer: Reload command forwarded to browser client`);
+          } catch (error) {
+            console.log(`[WARNING] MessageServer: Error forwarding reload to browser client: ${error.message}`);
+          }
+        }
+      } else {
+        console.log(`[WARNING] MessageServer: No browser extension clients connected to forward reload`);
+      }
+      
+      ws.send(JSON.stringify({
+        type: 'ack',
+        status: 'success',
+        message: 'Reload command sent to browser extension'
       }));
       
     } else {
