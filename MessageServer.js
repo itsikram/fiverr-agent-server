@@ -1116,6 +1116,33 @@ export class MessageServer extends EventEmitter {
         message: 'Reload command sent to browser extension'
       }));
       
+    } else if (msgType === 'test_notification') {
+      // Handle test notification from browser extension
+      console.log(`[DEBUG] MessageServer: Test notification received from browser extension`);
+      
+      const testData = data.data || data;
+      
+      // Broadcast test notification to Expo clients
+      this.broadcastToExpoClients({
+        type: 'new_message_detected',
+        data: {
+          clientName: testData.clientName || 'Test Client',
+          messageText: testData.messageText || 'This is a test notification!',
+          conversationId: testData.conversationId || 'test_' + Date.now(),
+          username: testData.username || 'testuser',
+          clientUsername: testData.username || 'testuser',
+          isTest: true
+        }
+      });
+      
+      console.log(`[DEBUG] MessageServer: Test notification broadcasted to Expo clients`);
+      
+      ws.send(JSON.stringify({
+        type: 'ack',
+        status: 'success',
+        message: 'Test notification sent to Android app'
+      }));
+      
     } else {
       console.log(`[WARNING] MessageServer: Unknown message type: ${msgType}`);
     }
