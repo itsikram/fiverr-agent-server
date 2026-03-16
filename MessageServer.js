@@ -9,6 +9,7 @@ import fs from 'fs';
 import path from 'path';
 import { fileURLToPath } from 'url';
 import { generateSessionId } from './utils/serverUtils.js';
+import pushNotificationService from './utils/pushNotificationService.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -55,6 +56,9 @@ export class MessageServer extends EventEmitter {
     this.storedClientList = null;
     this.storedNewMessages = [];
     this.storedClientActivations = [];
+    
+    // Push notification tokens (session_id -> pushToken)
+    this.pushTokens = new Map(); // session_id -> pushToken
     
     // Seller profiles
     this.sellerProfilesPath = path.join(__dirname, 'seller_profiles.json');
@@ -468,13 +472,68 @@ export class MessageServer extends EventEmitter {
     // Emit event
     this.emit('new_message_detected', data);
     
-    // Broadcast to Expo clients
+    // Broadcast to Expo clients via WebSocket (if app is running)
     this.broadcastToExpoClients({
       type: 'new_message_detected',
       data: data
     });
     
+    // Send push notifications to all registered tokens (works even when app is closed)
+    this.sendPushNotificationForMessage(data).catch(error => {
+      console.error(`[ERROR] MessageServer: Error sending push notification: ${error.message}`);
+    });
+    
     console.log(`[DEBUG] MessageServer: New message detection signal emitted and data stored`);
+  }
+  
+  /**
+   * Send push notification for new message
+   * This works even when the app is completely closed
+   */
+  async sendPushNotificationForMessage(messageData) {
+    const { clientName, messageText, conversationId, username, clientUsername, isTest } = messageData;
+    
+    // Get all registered push tokens
+    const pushTokens = Array.from(this.pushTokens.values());
+    
+    if (pushTokens.length === 0) {
+      console.log(`[DEBUG] MessageServer: No push tokens registered, skipping push notification`);
+      return;
+    }
+    
+    const title = isTest 
+      ? '🧪 Test Notification' 
+      : `New message from ${clientName || 'Client'}`;
+    const body = isTest 
+      ? `📱 ${messageText || 'This is a test notification!'}` 
+      : (messageText || 'You have a new message');
+    
+    // Truncate body if too long
+    const maxLength = 100;
+    const truncatedBody = body.length > maxLength 
+      ? body.substring(0, maxLength - 3) + '...' 
+      : body;
+    
+    console.log(`[DEBUG] MessageServer: Sending push notification to ${pushTokens.length} device(s)`);
+    
+    const result = await pushNotificationService.sendPushNotifications(pushTokens, {
+      title,
+      body: truncatedBody,
+      data: {
+        type: 'new_message',
+        conversationId: conversationId || null,
+        username: clientUsername || username || null,
+        clientName: clientName || null,
+        messageText: messageText || null,
+        isTest: isTest || false,
+      }
+    });
+    
+    if (result.success) {
+      console.log(`[DEBUG] MessageServer: Push notification sent successfully to ${result.sentCount || pushTokens.length} device(s)`);
+    } else {
+      console.error(`[ERROR] MessageServer: Failed to send push notification: ${result.error}`);
+    }
   }
   
   /**
@@ -501,6 +560,89 @@ export class MessageServer extends EventEmitter {
     });
     
     console.log(`[DEBUG] MessageServer: Client activated signal emitted and data stored`);
+  }
+  
+  /**
+   * Handle new client detected (first-time client with clock icon)
+   */
+  onNewClientDetected(data) {
+    const { clientUsername, clientName, clientData, url, timestamp } = data;
+    console.log(`[DEBUG] MessageServer: onNewClientDetected() called with username: ${clientUsername}`);
+    
+    // Prepare client information
+    const newClientInfo = {
+      username: clientUsername,
+      name: clientName || clientUsername,
+      conversationId: clientUsername,
+      url: url || null,
+      timestamp: timestamp || new Date().toISOString(),
+      isNewClient: true
+    };
+    
+    // Include additional client data if available
+    if (clientData) {
+      if (clientData.name) newClientInfo.name = clientData.name;
+      if (clientData.avatarUrl) {
+        newClientInfo.avatarUrl = clientData.avatarUrl;
+        newClientInfo.avatar_url = clientData.avatarUrl;
+      }
+      if (clientData.username) newClientInfo.username = clientData.username;
+    }
+    
+    // Emit event
+    this.emit('new_client_detected', newClientInfo);
+    
+    // Broadcast to Expo clients via WebSocket (if app is running)
+    this.broadcastToExpoClients({
+      type: 'new_client_detected',
+      data: newClientInfo
+    });
+    
+    // Send push notifications to all registered tokens (works even when app is closed)
+    this.sendPushNotificationForNewClient(newClientInfo).catch(error => {
+      console.error(`[ERROR] MessageServer: Error sending push notification for new client: ${error.message}`);
+    });
+    
+    console.log(`[DEBUG] MessageServer: New client detection signal emitted and notification sent`);
+  }
+  
+  /**
+   * Send push notification for new client
+   * This works even when the app is completely closed
+   */
+  async sendPushNotificationForNewClient(clientInfo) {
+    const { username, name } = clientInfo;
+    
+    // Get all registered push tokens
+    const pushTokens = Array.from(this.pushTokens.values());
+    
+    if (pushTokens.length === 0) {
+      console.log(`[DEBUG] MessageServer: No push tokens registered, skipping push notification for new client`);
+      return;
+    }
+    
+    const title = `🎉 New Client: ${name || username}`;
+    const body = `You have a new client message from ${name || username}!`;
+    
+    console.log(`[DEBUG] MessageServer: Sending push notification for new client to ${pushTokens.length} device(s)`);
+    
+    const result = await pushNotificationService.sendPushNotifications(pushTokens, {
+      title,
+      body,
+      data: {
+        type: 'new_client',
+        username: username,
+        clientName: name || username,
+        conversationId: username,
+        isNewClient: true
+      }
+    });
+    
+    if (result.success) {
+      console.log(`[DEBUG] MessageServer: Push notification for new client sent successfully to ${result.sentCount || pushTokens.length} device(s)`);
+    } else {
+      console.error(`[ERROR] MessageServer: Failed to send push notification for new client: ${result.error}`);
+    }
   }
   
   /**
@@ -705,6 +847,17 @@ export class MessageServer extends EventEmitter {
         type: 'ack',
         status: 'success',
         message: 'Client activated notification received'
+      }));
+      
+    } else if (msgType === 'new_client_detected') {
+      const newClientData = data.data || data;
+      console.log(`[DEBUG] MessageServer: Received new client detection notification`);
+      this.onNewClientDetected(newClientData);
+      
+      ws.send(JSON.stringify({
+        type: 'ack',
+        status: 'success',
+        message: 'New client detection received'
       }));
       
     } else if (msgType === 'seller_profile') {
@@ -1116,6 +1269,27 @@ export class MessageServer extends EventEmitter {
         message: 'Reload command sent to browser extension'
       }));
       
+    } else if (msgType === 'register_push_token') {
+      // Handle push token registration from Expo client
+      const pushToken = data.pushToken || data.push_token;
+      if (pushToken && sessionId) {
+        this.pushTokens.set(sessionId, pushToken);
+        console.log(`[DEBUG] MessageServer: Registered push token for session ${sessionId}`);
+        
+        ws.send(JSON.stringify({
+          type: 'ack',
+          status: 'success',
+          message: 'Push token registered'
+        }));
+      } else {
+        console.warn(`[WARNING] MessageServer: Invalid push token registration - sessionId: ${sessionId}, token: ${pushToken ? 'provided' : 'missing'}`);
+        ws.send(JSON.stringify({
+          type: 'ack',
+          status: 'error',
+          message: 'Invalid push token registration'
+        }));
+      }
+      
     } else if (msgType === 'test_notification') {
       // Handle test notification from browser extension
       console.log(`[DEBUG] MessageServer: Test notification received from browser extension`);
@@ -1298,6 +1472,7 @@ export class MessageServer extends EventEmitter {
     for (const sessionId of disconnected) {
       this.connectedClients.delete(sessionId);
       this.clientTypes.delete(sessionId);
+      this.pushTokens.delete(sessionId); // Also remove push token
       const ws = this.connectedClients.get(sessionId);
       if (ws && this.clientSessions.has(ws)) {
         this.clientSessions.delete(ws);
