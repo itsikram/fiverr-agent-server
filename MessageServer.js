@@ -951,6 +951,40 @@ export class MessageServer extends EventEmitter {
           data: this.storedMessageData
         }));
       }
+
+      const target = data.conversationId || data.username || null;
+      if (target) {
+        const browserClients = Array.from(this.connectedClients.entries())
+          .filter(([sid]) => this.clientTypes.get(sid) === 'browser');
+
+        if (browserClients.length > 0) {
+          const message = JSON.stringify({
+            type: 'commands',
+            commands: [
+              {
+                type: 'click_client',
+                username: target,
+                useFirstClient: false,
+              },
+              {
+                type: 'trigger',
+                action: 'extract_messages',
+                conversationId: target,
+                username: target,
+              },
+            ],
+          });
+
+          for (const [, browserWs] of browserClients) {
+            try {
+              browserWs.send(message);
+              console.log(`[DEBUG] MessageServer: Client activation and message extraction triggered for ${target}`);
+            } catch (error) {
+              console.log(`[WARNING] MessageServer: Error forwarding message extraction trigger to browser client: ${error.message}`);
+            }
+          }
+        }
+      }
       
     } else if (msgType === 'request_client_data') {
       const clientKey = data.username || data.conversationId;
