@@ -1054,6 +1054,7 @@ export class MessageServer extends EventEmitter {
     } else if (msgType === 'send_message') {
       const messageText = data.message;
       const conversationId = data.conversationId;
+      const username = data.username || data.clientUsername || data.client || null;
       
       if (!messageText || !messageText.trim()) {
         ws.send(JSON.stringify({
@@ -1068,7 +1069,9 @@ export class MessageServer extends EventEmitter {
       
       const command = {
         type: 'send_message',
-        message: messageText.trim()
+        message: messageText.trim(),
+        conversationId: conversationId || username || null,
+        username: username || conversationId || null,
       };
       
       // Forward to browser extension clients
