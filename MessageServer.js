@@ -964,6 +964,7 @@ export class MessageServer extends EventEmitter {
               {
                 type: 'click_client',
                 username: target,
+                conversationId: target,
                 useFirstClient: false,
               },
               {
