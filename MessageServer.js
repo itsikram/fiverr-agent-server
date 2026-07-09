@@ -33,7 +33,11 @@ export class MessageServer extends EventEmitter {
       process.env.MONGODB_URL ||
       ""
     ).trim();
-    this.mongoDbName = (process.env.MONGODB_DB_NAME || "fiverr_agent").trim();
+    const envDbName = (process.env.MONGODB_DB_NAME || "").trim();
+    this.mongoDbName =
+      envDbName ||
+      this.parseMongoDbNameFromUrl(this.mongodbUrl) ||
+      "fiverr_agent";
     this.mongoProfilesColl = (
       process.env.MONGODB_PROFILES_COLLECTION || "seller_profiles"
     ).trim();
@@ -89,12 +93,27 @@ export class MessageServer extends EventEmitter {
     this.mongoClientsCollection = null;
     this.mongoMessagesCollection = null;
     this.mongoAssignmentsCollection = null;
+    this.mongoDb = null;
 
     // Lock for thread-safe operations
     this.lock = new Map(); // Simple lock using a flag
 
     // Load seller profiles
     this.loadSellerProfiles();
+  }
+
+  parseMongoDbNameFromUrl(url) {
+    if (!url || typeof url !== "string") {
+      return null;
+    }
+
+    const match = url.match(/^mongodb(?:\+srv)?:\/\/[^/]+\/([^?\/]+)(?:\?|$)/i);
+    if (!match || !match[1]) {
+      return null;
+    }
+
+    const dbName = match[1].trim().replace(/\/$/, "");
+    return dbName ? decodeURIComponent(dbName) : null;
   }
 
   /**
@@ -115,9 +134,10 @@ export class MessageServer extends EventEmitter {
       });
 
       await this.mongoClient.connect();
-      await this.mongoClient.db("admin").command({ ping: 1 });
-
       const db = this.mongoClient.db(this.mongoDbName);
+      await db.command({ ping: 1 });
+      this.mongoDb = db;
+
       this.mongoProfilesCollection = db.collection(this.mongoProfilesColl);
 
       console.log(
@@ -129,7 +149,12 @@ export class MessageServer extends EventEmitter {
         `[WARNING] MessageServer: MongoDB connection failed: ${error.message}`,
       );
       this.mongoClient = null;
+      this.mongoDb = null;
       this.mongoProfilesCollection = null;
+      this.mongoUsersCollection = null;
+      this.mongoClientsCollection = null;
+      this.mongoMessagesCollection = null;
+      this.mongoAssignmentsCollection = null;
       return null;
     }
   }
