@@ -962,12 +962,6 @@ export class MessageServer extends EventEmitter {
             type: 'commands',
             commands: [
               {
-                type: 'click_client',
-                username: target,
-                conversationId: target,
-                useFirstClient: false,
-              },
-              {
                 type: 'trigger',
                 action: 'extract_messages',
                 conversationId: target,
@@ -979,7 +973,7 @@ export class MessageServer extends EventEmitter {
           for (const [, browserWs] of browserClients) {
             try {
               browserWs.send(message);
-              console.log(`[DEBUG] MessageServer: Client activation and message extraction triggered for ${target}`);
+              console.log(`[DEBUG] MessageServer: Message extraction triggered for ${target}`);
             } catch (error) {
               console.log(`[WARNING] MessageServer: Error forwarding message extraction trigger to browser client: ${error.message}`);
             }
@@ -1036,8 +1030,21 @@ export class MessageServer extends EventEmitter {
     } else if (msgType === 'click_client' || msgType === 'clickFirstClient') {
       const username = data.username;
       const useFirstClient = data.useFirstClient || msgType === 'clickFirstClient';
-      
+      const timestamp = new Date().toISOString();
+      const logEntry = {
+        timestamp,
+        type: msgType,
+        username: username || null,
+        useFirstClient,
+        source: 'server-click-handler'
+      };
+
       console.log(`[DEBUG] MessageServer: Expo client requesting to click client: username=${username}, use_first_client=${useFirstClient}`);
+      fs.appendFileSync(
+        path.join(__dirname, 'click_events.log'),
+        `${JSON.stringify(logEntry)}\n`,
+        'utf8'
+      );
       
       let command;
       if (useFirstClient) {
