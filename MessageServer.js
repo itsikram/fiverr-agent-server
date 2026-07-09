@@ -5,6 +5,7 @@ import { WebSocketServer } from 'ws';
 import http from 'http';
 import { EventEmitter } from 'events';
 import { MongoClient } from 'mongodb';
+import crypto from 'crypto';
 import fs from 'fs';
 import path from 'path';
 import { fileURLToPath } from 'url';
@@ -29,6 +30,7 @@ export class MessageServer extends EventEmitter {
     this.mongoProfilesColl = (process.env.MONGODB_PROFILES_COLLECTION || 'seller_profiles').trim();
     this.mongoClientsColl = (process.env.MONGODB_CLIENTS_COLLECTION || 'clients').trim();
     this.mongoMessagesColl = (process.env.MONGODB_MESSAGES_COLLECTION || 'messages').trim();
+    this.mongoUsersColl = (process.env.MONGODB_USERS_COLLECTION || 'users').trim();
     
     // Server state
     this.server = null;
@@ -119,7 +121,272 @@ export class MessageServer extends EventEmitter {
     }
     return this.mongoClient.db(this.mongoDbName);
   }
-  
+
+  async getMongoUsersCollection() {
+    if (!this.mongodbUrl) {
+      return null;
+    }
+
+    if (this.mongoUsersCollection) {
+      return this.mongoUsersCollection;
+    }
+
+    const db = await this.getMongoDb();
+    if (!db) {
+      return null;
+    }
+
+    this.mongoUsersCollection = db.collection(this.mongoUsersColl);
+    return this.mongoUsersCollection;
+  }
+
+  async hashPassword(password, salt = null) {
+    const actualSalt = salt || crypto.randomBytes(16).toString('hex');
+    const derivedKey = crypto.scryptSync(password, actualSalt, 64);
+    return {
+      salt: actualSalt,
+      hash: derivedKey.toString('hex'),
+    };
+  }
+
+  async verifyPassword(password, salt, hash) {
+    const derivedKey = crypto.scryptSync(password, salt, 64);
+    return derivedKey.toString('hex') === hash;
+  }
+
+  generateAuthToken() {
+    return crypto.randomBytes(32).toString('hex');
+  }
+
+  async getUserByEmail(email) {
+    const coll = await this.getMongoUsersCollection();
+    if (!coll) {
+      return null;
+    }
+    return coll.findOne({ email: email.toLowerCase().trim() });
+  }
+
+  async getUserByToken(token) {
+    const coll = await this.getMongoUsersCollection();
+    if (!coll) {
+      return null;
+    }
+    const now = new Date();
+    return coll.findOne({
+      authTokens: {
+        $elemMatch: {
+          token: token,
+          expires: { $gt: now }
+        }
+      }
+    });
+  }
+
+  async addAuthTokenToUser(email, token) {
+    const coll = await this.getMongoUsersCollection();
+    if (!coll) {
+      return false;
+    }
+    const expires = new Date(Date.now() + 30 * 24 * 60 * 60 * 1000);
+    const result = await coll.updateOne(
+      { email: email.toLowerCase().trim() },
+      {
+        $push: {
+          authTokens: {
+            token,
+            expires,
+          },
+        },
+        $set: { updated_at: new Date().toISOString() },
+      },
+      { upsert: false }
+    );
+    return result.modifiedCount > 0;
+  }
+
+  async invalidateAuthToken(token) {
+    const coll = await this.getMongoUsersCollection();
+    if (!coll) {
+      return false;
+    }
+    const result = await coll.updateOne(
+      { 'authTokens.token': token },
+      { $pull: { authTokens: { token } } }
+    );
+    return result.modifiedCount > 0;
+  }
+
+  async createUser({ username, email, password }) {
+    const coll = await this.getMongoUsersCollection();
+    if (!coll) {
+      throw new Error('MongoDB users collection unavailable');
+    }
+
+    const normalizedEmail = email.toLowerCase().trim();
+    const existingUser = await coll.findOne({ email: normalizedEmail });
+    if (existingUser) {
+      throw new Error('User already exists with that email');
+    }
+
+    const { salt, hash } = await this.hashPassword(password);
+    const user = {
+      username: username.trim(),
+      email: normalizedEmail,
+      passwordHash: hash,
+      passwordSalt: salt,
+      authTokens: [],
+      created_at: new Date().toISOString(),
+      updated_at: new Date().toISOString(),
+    };
+
+    await coll.insertOne(user);
+    return { username: user.username, email: user.email };
+  }
+
+  async authenticateUser({ email, password }) {
+    const user = await this.getUserByEmail(email);
+    if (!user) {
+      return null;
+    }
+    const valid = await this.verifyPassword(password, user.passwordSalt, user.passwordHash);
+    return valid ? user : null;
+  }
+
+  async sendJsonResponse(res, status, payload) {
+    const body = JSON.stringify(payload || {});
+    res.writeHead(status, {
+      'Content-Type': 'application/json',
+      'Content-Length': Buffer.byteLength(body),
+      'Access-Control-Allow-Origin': '*',
+      'Access-Control-Allow-Methods': 'GET, POST, OPTIONS, HEAD',
+      'Access-Control-Allow-Headers': 'Content-Type, Authorization',
+    });
+    res.end(body);
+  }
+
+  async parseJsonBody(req) {
+    return new Promise((resolve, reject) => {
+      let body = '';
+      req.on('data', (chunk) => {
+        body += chunk.toString();
+      });
+      req.on('end', () => {
+        if (!body) {
+          resolve({});
+          return;
+        }
+        try {
+          resolve(JSON.parse(body));
+        } catch (error) {
+          reject(error);
+        }
+      });
+      req.on('error', reject);
+    });
+  }
+
+  async handleRegister(req, res, body) {
+    const email = (body.email || '').trim().toLowerCase();
+    const username = (body.username || '').trim();
+    const password = body.password || '';
+
+    if (!email || !username || !password) {
+      return this.sendJsonResponse(res, 400, {
+        error: 'Missing username, email, or password',
+      });
+    }
+
+    try {
+      const user = await this.createUser({ username, email, password });
+      const token = this.generateAuthToken();
+      await this.addAuthTokenToUser(email, token);
+      return this.sendJsonResponse(res, 201, {
+        success: true,
+        token,
+        username: user.username,
+        email: user.email,
+      });
+    } catch (error) {
+      return this.sendJsonResponse(res, 400, {
+        error: error.message || 'Failed to register user',
+      });
+    }
+  }
+
+  async handleLogin(req, res, body) {
+    const email = (body.email || '').trim().toLowerCase();
+    const password = body.password || '';
+
+    if (!email || !password) {
+      return this.sendJsonResponse(res, 400, {
+        error: 'Missing email or password',
+      });
+    }
+
+    try {
+      const user = await this.authenticateUser({ email, password });
+      if (!user) {
+        return this.sendJsonResponse(res, 401, {
+          error: 'Invalid email or password',
+        });
+      }
+
+      const token = this.generateAuthToken();
+      await this.addAuthTokenToUser(email, token);
+      return this.sendJsonResponse(res, 200, {
+        success: true,
+        token,
+        username: user.username,
+        email: user.email,
+      });
+    } catch (error) {
+      return this.sendJsonResponse(res, 500, {
+        error: error.message || 'Failed to log in',
+      });
+    }
+  }
+
+  async handleMe(req, res, token) {
+    if (!token) {
+      return this.sendJsonResponse(res, 401, {
+        error: 'Missing auth token',
+      });
+    }
+
+    const user = await this.getUserByToken(token);
+    if (!user) {
+      return this.sendJsonResponse(res, 401, {
+        error: 'Invalid or expired token',
+      });
+    }
+
+    return this.sendJsonResponse(res, 200, {
+      success: true,
+      username: user.username,
+      email: user.email,
+    });
+  }
+
+  async handleLogout(req, res, token) {
+    if (!token) {
+      return this.sendJsonResponse(res, 401, {
+        error: 'Missing auth token',
+      });
+    }
+
+    const removed = await this.invalidateAuthToken(token);
+    if (!removed) {
+      return this.sendJsonResponse(res, 400, {
+        error: 'Token invalid or already logged out',
+      });
+    }
+
+    return this.sendJsonResponse(res, 200, {
+      success: true,
+      message: 'Logged out successfully',
+    });
+  }
+
   /**
    * Load seller profiles from MongoDB or JSON file
    */
@@ -1614,6 +1881,60 @@ export class MessageServer extends EventEmitter {
           'Content-Length': Buffer.byteLength(body)
         });
         res.end(body);
+        return;
+      }
+
+      if (pathname === '/auth/register' && req.method === 'POST') {
+        (async () => {
+          try {
+            const body = await this.parseJsonBody(req);
+            await this.handleRegister(req, res, body);
+          } catch (error) {
+            console.error('[MessageServer] Error handling register:', error);
+            await this.sendJsonResponse(res, 500, { error: 'Internal server error' });
+          }
+        })();
+        return;
+      }
+
+      if (pathname === '/auth/login' && req.method === 'POST') {
+        (async () => {
+          try {
+            const body = await this.parseJsonBody(req);
+            await this.handleLogin(req, res, body);
+          } catch (error) {
+            console.error('[MessageServer] Error handling login:', error);
+            await this.sendJsonResponse(res, 500, { error: 'Internal server error' });
+          }
+        })();
+        return;
+      }
+
+      if (pathname === '/auth/me' && req.method === 'GET') {
+        (async () => {
+          try {
+            const authHeader = req.headers['authorization'] || '';
+            const token = authHeader.toString().replace(/^Bearer\s+/i, '').trim();
+            await this.handleMe(req, res, token);
+          } catch (error) {
+            console.error('[MessageServer] Error handling auth me:', error);
+            await this.sendJsonResponse(res, 500, { error: 'Internal server error' });
+          }
+        })();
+        return;
+      }
+
+      if (pathname === '/auth/logout' && req.method === 'POST') {
+        (async () => {
+          try {
+            const authHeader = req.headers['authorization'] || '';
+            const token = authHeader.toString().replace(/^Bearer\s+/i, '').trim();
+            await this.handleLogout(req, res, token);
+          } catch (error) {
+            console.error('[MessageServer] Error handling logout:', error);
+            await this.sendJsonResponse(res, 500, { error: 'Internal server error' });
+          }
+        })();
         return;
       }
       

@@ -14,8 +14,8 @@ import http from 'http';
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
 
-// Load .env from project root (parent of node-server/)
-const envPath = join(__dirname, '..', '.env');
+// Load .env from the server project root
+const envPath = join(__dirname, '.env');
 dotenv.config({ path: envPath });
 
 /**
