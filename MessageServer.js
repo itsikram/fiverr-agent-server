@@ -4,7 +4,7 @@
 import { WebSocketServer } from "ws";
 import http from "http";
 import { EventEmitter } from "events";
-import { MongoClient } from "mongodb";
+import mongoose from "mongoose";
 import crypto from "crypto";
 import fs from "fs";
 import path from "path";
@@ -88,6 +88,8 @@ export class MessageServer extends EventEmitter {
 
     // MongoDB
     this.mongoClient = null;
+    this.mongooseConnection = null;
+    this.mongoConnectionPromise = null;
     this.mongoProfilesCollection = null;
     this.mongoUsersCollection = null;
     this.mongoClientsCollection = null;
@@ -153,8 +155,66 @@ export class MessageServer extends EventEmitter {
       retryWrites: true,
       maxPoolSize: 5,
       appName: "fiverr-agent-server",
+      dbName: this.mongoDbName,
       tls: isAtlasLike,
     };
+  }
+
+  async connectMongo() {
+    if (!this.mongodbUrl) {
+      return null;
+    }
+
+    if (this.mongooseConnection?.readyState === 1) {
+      this.mongoClient = this.mongooseConnection;
+      this.mongoDb = this.mongooseConnection.db;
+      return this.mongooseConnection;
+    }
+
+    if (this.mongoConnectionPromise) {
+      return this.mongoConnectionPromise;
+    }
+
+    this.mongoConnectionPromise = (async () => {
+      const mongoOptions = this.getMongoClientOptions();
+      await mongoose.connect(this.mongodbUrl, mongoOptions);
+
+      this.mongooseConnection = mongoose.connection;
+      this.mongoClient = this.mongooseConnection;
+      this.mongoDb = this.mongooseConnection.db;
+
+      this.mongooseConnection.on("error", (error) => {
+        console.log(
+          `[WARNING] MessageServer: MongoDB connection error: ${error.message}`,
+        );
+      });
+
+      this.mongooseConnection.on("disconnected", () => {
+        console.log("[WARNING] MessageServer: MongoDB disconnected");
+      });
+
+      console.log(
+        `[DEBUG] MessageServer: MongoDB connected via Mongoose (db=${this.mongoDbName})`,
+      );
+      return this.mongooseConnection;
+    })().catch((error) => {
+      const details = error?.cause?.code || error?.code || "unknown";
+      console.log(
+        `[WARNING] MessageServer: MongoDB connection failed (${details}): ${error.message}`,
+      );
+      this.mongoClient = null;
+      this.mongooseConnection = null;
+      this.mongoDb = null;
+      this.mongoProfilesCollection = null;
+      this.mongoUsersCollection = null;
+      this.mongoClientsCollection = null;
+      this.mongoMessagesCollection = null;
+      this.mongoAssignmentsCollection = null;
+      this.mongoConnectionPromise = null;
+      return null;
+    });
+
+    return this.mongoConnectionPromise;
   }
 
   /**
@@ -170,18 +230,15 @@ export class MessageServer extends EventEmitter {
     }
 
     try {
-      const mongoOptions = this.getMongoClientOptions();
-      this.mongoClient = new MongoClient(this.mongodbUrl, mongoOptions);
+      await this.connectMongo();
+      if (!this.mongoDb) {
+        return null;
+      }
 
-      await this.mongoClient.connect();
-      const db = this.mongoClient.db(this.mongoDbName);
-      await db.command({ ping: 1 });
-      this.mongoDb = db;
-
-      this.mongoProfilesCollection = db.collection(this.mongoProfilesColl);
+      this.mongoProfilesCollection = this.mongoDb.collection(this.mongoProfilesColl);
 
       console.log(
-        `[DEBUG] MessageServer: MongoDB connected (db=${this.mongoDbName}, coll=${this.mongoProfilesColl})`,
+        `[DEBUG] MessageServer: MongoDB collection ready (db=${this.mongoDbName}, coll=${this.mongoProfilesColl})`,
       );
       return this.mongoProfilesCollection;
     } catch (error) {
@@ -190,6 +247,7 @@ export class MessageServer extends EventEmitter {
         `[WARNING] MessageServer: MongoDB connection failed (${details}): ${error.message}`,
       );
       this.mongoClient = null;
+      this.mongooseConnection = null;
       this.mongoDb = null;
       this.mongoProfilesCollection = null;
       this.mongoUsersCollection = null;
@@ -204,11 +262,16 @@ export class MessageServer extends EventEmitter {
    * Get MongoDB database
    */
   async getMongoDb() {
-    const coll = await this.getMongoProfilesCollection();
-    if (!coll) {
+    if (!this.mongodbUrl) {
       return null;
     }
-    return this.mongoClient.db(this.mongoDbName);
+
+    try {
+      await this.connectMongo();
+      return this.mongoDb;
+    } catch (error) {
+      return null;
+    }
   }
 
   async getMongoClientsCollection() {
@@ -3676,11 +3739,22 @@ export class MessageServer extends EventEmitter {
     }
 
     // Close MongoDB connection
-    if (this.mongoClient) {
-      this.mongoClient.close().catch(() => {});
-      this.mongoClient = null;
-      this.mongoProfilesCollection = null;
+    if (this.mongooseConnection) {
+      this.mongooseConnection.close().catch(() => {});
+      this.mongooseConnection = null;
     }
+
+    if (this.mongoClient && typeof this.mongoClient.close === "function") {
+      this.mongoClient.close().catch(() => {});
+    }
+
+    this.mongoClient = null;
+    this.mongoDb = null;
+    this.mongoProfilesCollection = null;
+    this.mongoUsersCollection = null;
+    this.mongoClientsCollection = null;
+    this.mongoMessagesCollection = null;
+    this.mongoAssignmentsCollection = null;
 
     console.log(`[DEBUG] MessageServer: Server stopped and cleaned up`);
   }

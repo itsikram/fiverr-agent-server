@@ -18,6 +18,7 @@
   "dependencies": {
     "ws": "^8.16.0",
     "mongodb": "^6.3.0",
+    "mongoose": "^8.7.0",
     "dotenv": "^16.3.1",
     "expo-server-sdk": "^3.7.0"
   },
