@@ -1,6 +1,8 @@
 /**
  * Utility functions for MessageServer
  */
+import net from 'net';
+import { exec } from 'child_process';
 
 /**
  * Generate a unique session ID
@@ -20,22 +22,17 @@ export function generateSessionId(context = null) {
  */
 export async function checkPortAvailable(port) {
   return new Promise((resolve) => {
-    const net = require('net');
     const server = net.createServer();
-    
+
     server.listen(port, () => {
       server.once('close', () => {
         resolve(true);
       });
       server.close();
     });
-    
-    server.on('error', (err) => {
-      if (err.code === 'EADDRINUSE') {
-        resolve(false);
-      } else {
-        resolve(false);
-      }
+
+    server.on('error', () => {
+      resolve(false);
     });
   });
 }
@@ -51,14 +48,13 @@ export async function findProcessUsingPort(port) {
       resolve(null);
       return;
     }
-    
-    const { exec } = require('child_process');
+
     exec(`netstat -ano | findstr :${port}`, (error, stdout) => {
       if (error || !stdout) {
         resolve(null);
         return;
       }
-      
+
       const lines = stdout.trim().split('\n');
       for (const line of lines) {
         const parts = line.trim().split(/\s+/);

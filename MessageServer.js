@@ -29,9 +29,11 @@ export class MessageServer extends EventEmitter {
 
     // MongoDB configuration
     this.mongodbUrl = this.normalizeMongoUrl(
-      process.env.MONGODB_URI ||
-      process.env.MONGODB_URL ||
-      ""
+      (process.env.mongodb_url ||
+        process.env.MONGODB_URL ||
+        process.env.MONGODB_URI ||
+        ""
+      ).trim()
     );
     const envDbName = (process.env.MONGODB_DB_NAME || "").trim();
     this.mongoDbName =
@@ -86,10 +88,18 @@ export class MessageServer extends EventEmitter {
     this.sellerProfiles = new Map(); // username -> profile
     this.sellerProfile = null; // current (most recently received)
 
+    // Local fallback user storage when MongoDB is unavailable
+    this.localUsers = new Map();
+    this.localAuthTokens = new Map();
+    this.localUsersFilePath = path.join(__dirname, "data", "users.json");
+    this.ensureLocalUsersStore();
+
     // MongoDB
     this.mongoClient = null;
     this.mongooseConnection = null;
     this.mongoConnectionPromise = null;
+    this.mongoConnectionDisabled = false;
+    this.mongoConnectionWarningShown = false;
     this.mongoProfilesCollection = null;
     this.mongoUsersCollection = null;
     this.mongoClientsCollection = null;
@@ -162,6 +172,16 @@ export class MessageServer extends EventEmitter {
 
   async connectMongo() {
     if (!this.mongodbUrl) {
+      if (!this.mongoConnectionWarningShown) {
+        console.log(
+          "[WARNING] MessageServer: MongoDB not configured; using local storage fallback",
+        );
+        this.mongoConnectionWarningShown = true;
+      }
+      return null;
+    }
+
+    if (this.mongoConnectionDisabled) {
       return null;
     }
 
@@ -177,6 +197,9 @@ export class MessageServer extends EventEmitter {
 
     this.mongoConnectionPromise = (async () => {
       const mongoOptions = this.getMongoClientOptions();
+      console.log(
+        `[DEBUG] MessageServer: Attempting MongoDB connection using env URL (db=${this.mongoDbName})`,
+      );
       await mongoose.connect(this.mongodbUrl, mongoOptions);
 
       this.mongooseConnection = mongoose.connection;
@@ -193,15 +216,25 @@ export class MessageServer extends EventEmitter {
         console.log("[WARNING] MessageServer: MongoDB disconnected");
       });
 
+      this.mongooseConnection.on("connected", () => {
+        console.log(
+          `[SUCCESS] MessageServer: MongoDB connected via Mongoose (db=${this.mongoDbName})`,
+        );
+      });
+
       console.log(
-        `[DEBUG] MessageServer: MongoDB connected via Mongoose (db=${this.mongoDbName})`,
+        `[SUCCESS] MessageServer: MongoDB connected via Mongoose (db=${this.mongoDbName})`,
       );
       return this.mongooseConnection;
     })().catch((error) => {
       const details = error?.cause?.code || error?.code || "unknown";
-      console.log(
-        `[WARNING] MessageServer: MongoDB connection failed (${details}): ${error.message}`,
-      );
+      if (!this.mongoConnectionWarningShown) {
+        console.log(
+          `[WARNING] MessageServer: MongoDB connection failed (${details}): ${error.message}. Continuing with local storage fallback`,
+        );
+        this.mongoConnectionWarningShown = true;
+      }
+      this.mongoConnectionDisabled = true;
       this.mongoClient = null;
       this.mongooseConnection = null;
       this.mongoDb = null;
@@ -655,6 +688,69 @@ export class MessageServer extends EventEmitter {
     };
   }
 
+  ensureLocalUsersStore() {
+    try {
+      const dir = path.dirname(this.localUsersFilePath);
+      if (!fs.existsSync(dir)) {
+        fs.mkdirSync(dir, { recursive: true });
+      }
+
+      if (!fs.existsSync(this.localUsersFilePath)) {
+        fs.writeFileSync(
+          this.localUsersFilePath,
+          JSON.stringify({ users: [] }, null, 2),
+        );
+      }
+
+      this.loadLocalUsersStore();
+    } catch (error) {
+      console.log(
+        `[WARNING] MessageServer: Unable to initialize local users store: ${error.message}`,
+      );
+    }
+  }
+
+  loadLocalUsersStore() {
+    try {
+      if (!fs.existsSync(this.localUsersFilePath)) {
+        return;
+      }
+
+      const raw = fs.readFileSync(this.localUsersFilePath, "utf8");
+      const parsed = JSON.parse(raw);
+      const users = Array.isArray(parsed?.users) ? parsed.users : [];
+
+      this.localUsers = new Map();
+      for (const user of users) {
+        if (user?.email) {
+          this.localUsers.set(user.email.toLowerCase().trim(), user);
+        }
+      }
+    } catch (error) {
+      console.log(
+        `[WARNING] MessageServer: Unable to load local users store: ${error.message}`,
+      );
+    }
+  }
+
+  persistLocalUsersStore() {
+    try {
+      const users = Array.from(this.localUsers.values()).map((user) => ({
+        ...user,
+        authTokens: user.authTokens || [],
+      }));
+
+      fs.writeFileSync(
+        this.localUsersFilePath,
+        JSON.stringify({ users }, null, 2),
+      );
+    } catch (error) {
+      console.log(
+        `[WARNING] MessageServer: Unable to persist local users store: ${error.message}`,
+      );
+    }
+  }
+
   async hashPassword(password, salt = null) {
     const actualSalt = salt || crypto.randomBytes(16).toString("hex");
     const derivedKey = crypto.scryptSync(password, actualSalt, 64);
@@ -675,70 +771,117 @@ export class MessageServer extends EventEmitter {
 
   async getUserByEmail(email) {
     const coll = await this.getMongoUsersCollection();
-    if (!coll) {
-      return null;
+    if (coll) {
+      return coll.findOne({ email: email.toLowerCase().trim() });
     }
-    return coll.findOne({ email: email.toLowerCase().trim() });
+
+    const normalizedEmail = email.toLowerCase().trim();
+    return this.localUsers.get(normalizedEmail) || null;
   }
 
   async getUserByToken(token) {
     const coll = await this.getMongoUsersCollection();
-    if (!coll) {
-      return null;
-    }
-    const now = new Date();
-    return coll.findOne({
-      authTokens: {
-        $elemMatch: {
-          token: token,
-          expires: { $gt: now },
+    if (coll) {
+      const now = new Date();
+      return coll.findOne({
+        authTokens: {
+          $elemMatch: {
+            token: token,
+            expires: { $gt: now },
+          },
         },
-      },
-    });
+      });
+    }
+
+    const user = Array.from(this.localUsers.values()).find((entry) =>
+      (entry.authTokens || []).some((item) => item.token === token && new Date(item.expires) > new Date()),
+    );
+    return user || null;
   }
 
   async addAuthTokenToUser(email, token) {
     const coll = await this.getMongoUsersCollection();
-    if (!coll) {
+    if (coll) {
+      const expires = new Date(Date.now() + 30 * 24 * 60 * 60 * 1000);
+      const result = await coll.updateOne(
+        { email: email.toLowerCase().trim() },
+        {
+          $push: {
+            authTokens: {
+              token,
+              expires,
+            },
+          },
+          $set: { updated_at: new Date().toISOString() },
+        },
+        { upsert: false },
+      );
+      return result.modifiedCount > 0;
+    }
+
+    const normalizedEmail = email.toLowerCase().trim();
+    const user = this.localUsers.get(normalizedEmail);
+    if (!user) {
       return false;
     }
+
     const expires = new Date(Date.now() + 30 * 24 * 60 * 60 * 1000);
-    const result = await coll.updateOne(
-      { email: email.toLowerCase().trim() },
-      {
-        $push: {
-          authTokens: {
-            token,
-            expires,
-          },
-        },
-        $set: { updated_at: new Date().toISOString() },
-      },
-      { upsert: false },
-    );
-    return result.modifiedCount > 0;
+    user.authTokens = user.authTokens || [];
+    user.authTokens.push({ token, expires });
+    user.updated_at = new Date().toISOString();
+    this.localUsers.set(normalizedEmail, user);
+    this.persistLocalUsersStore();
+    return true;
   }
 
   async invalidateAuthToken(token) {
     const coll = await this.getMongoUsersCollection();
-    if (!coll) {
-      return false;
+    if (coll) {
+      const result = await coll.updateOne(
+        { "authTokens.token": token },
+        { $pull: { authTokens: { token } } },
+      );
+      return result.modifiedCount > 0;
     }
-    const result = await coll.updateOne(
-      { "authTokens.token": token },
-      { $pull: { authTokens: { token } } },
-    );
-    return result.modifiedCount > 0;
+
+    for (const [email, user] of this.localUsers.entries()) {
+      const nextTokens = (user.authTokens || []).filter((item) => item.token !== token);
+      if (nextTokens.length !== (user.authTokens || []).length) {
+        user.authTokens = nextTokens;
+        this.localUsers.set(email, user);
+        return true;
+      }
+    }
+    return false;
   }
 
   async createUser({ username, email, password }) {
     const coll = await this.getMongoUsersCollection();
-    if (!coll) {
-      throw new Error("MongoDB users collection unavailable");
+    const normalizedEmail = email.toLowerCase().trim();
+
+    if (coll) {
+      const existingUser = await coll.findOne({ email: normalizedEmail });
+      if (existingUser) {
+        throw new Error("User already exists with that email");
+      }
+
+      const { salt, hash } = await this.hashPassword(password);
+      const user = {
+        username: username.trim(),
+        email: normalizedEmail,
+        passwordHash: hash,
+        passwordSalt: salt,
+        role: this.isAdminEmail(normalizedEmail) ? "admin" : "user",
+        authTokens: [],
+        created_at: new Date().toISOString(),
+        updated_at: new Date().toISOString(),
+      };
+
+      await coll.insertOne(user);
+      return { username: user.username, email: user.email };
     }
 
-    const normalizedEmail = email.toLowerCase().trim();
-    const existingUser = await coll.findOne({ email: normalizedEmail });
+    const existingUser = this.localUsers.get(normalizedEmail);
     if (existingUser) {
       throw new Error("User already exists with that email");
     }
@@ -755,7 +898,8 @@ export class MessageServer extends EventEmitter {
       updated_at: new Date().toISOString(),
     };
 
-    await coll.insertOne(user);
+    this.localUsers.set(normalizedEmail, user);
+    this.persistLocalUsersStore();
     return { username: user.username, email: user.email };
   }
 
@@ -786,6 +930,13 @@ export class MessageServer extends EventEmitter {
     res.end(body);
   }
 
+  normalizeString(value) {
+    if (value === null || value === undefined) {
+      return "";
+    }
+    return String(value).trim();
+  }
+
   async parseJsonBody(req) {
     return new Promise((resolve, reject) => {
       let body = "";
@@ -797,10 +948,83 @@ export class MessageServer extends EventEmitter {
           resolve({});
           return;
         }
+
+        const trimmedBody = body.trim();
+        console.log("[DEBUG] MessageServer: parseJsonBody received", trimmedBody);
+        if (!trimmedBody) {
+          resolve({});
+          return;
+        }
+
         try {
-          resolve(JSON.parse(body));
+          if (trimmedBody.startsWith("{") || trimmedBody.startsWith("[")) {
+            try {
+              resolve(JSON.parse(trimmedBody));
+              return;
+            } catch {
+              const parseObjectLikePayload = (input) => {
+                const trimmedInput = input.trim();
+                if (!trimmedInput.startsWith("{") || !trimmedInput.endsWith("}")) {
+                  throw new Error("Unsupported object format");
+                }
+
+                const content = trimmedInput.slice(1, -1).trim();
+                if (!content) {
+                  return {};
+                }
+
+                const entries = content
+                  .split(",")
+                  .map((part) => part.trim())
+                  .filter(Boolean)
+                  .map((part) => {
+                    const separatorIndex = part.indexOf(":");
+                    if (separatorIndex === -1) {
+                      return null;
+                    }
+
+                    const rawKey = part.slice(0, separatorIndex).trim();
+                    const rawValue = part.slice(separatorIndex + 1).trim();
+                    const normalizedKey = rawKey.replace(/^['"]|['"]$/g, "");
+
+                    let normalizedValue = rawValue;
+                    if (/^(true|false)$/i.test(normalizedValue)) {
+                      normalizedValue = normalizedValue.toLowerCase() === "true";
+                    } else if (/^-?\d+(?:\.\d+)?$/.test(normalizedValue)) {
+                      normalizedValue = Number(normalizedValue);
+                    } else if (normalizedValue === "null") {
+                      normalizedValue = null;
+                    } else {
+                      normalizedValue = normalizedValue.replace(/^['"]|['"]$/g, "");
+                    }
+
+                    return [normalizedKey, normalizedValue];
+                  })
+                  .filter(Boolean);
+
+                return Object.fromEntries(entries);
+              };
+
+              resolve(parseObjectLikePayload(trimmedBody));
+              return;
+            }
+          }
+
+          if (trimmedBody.includes("=")) {
+            const parsed = Object.fromEntries(
+              new URLSearchParams(trimmedBody),
+            );
+            resolve(parsed);
+            return;
+          }
+
+          resolve({ value: trimmedBody });
         } catch (error) {
-          reject(error);
+          try {
+            resolve(JSON.parse(trimmedBody.replace(/'/g, '"')));
+          } catch (nestedError) {
+            reject(nestedError);
+          }
         }
       });
       req.on("error", reject);
@@ -808,9 +1032,9 @@ export class MessageServer extends EventEmitter {
   }
 
   async handleRegister(req, res, body) {
-    const email = (body.email || "").trim().toLowerCase();
-    const username = (body.username || "").trim();
-    const password = body.password || "";
+    const email = this.normalizeString(body?.email).toLowerCase();
+    const username = this.normalizeString(body?.username);
+    const password = this.normalizeString(body?.password);
 
     if (!email || !username || !password) {
       return this.sendJsonResponse(res, 400, {
@@ -837,8 +1061,8 @@ export class MessageServer extends EventEmitter {
   }
 
   async handleLogin(req, res, body) {
-    const email = (body.email || "").trim().toLowerCase();
-    const password = body.password || "";
+    const email = this.normalizeString(body?.email).toLowerCase();
+    const password = this.normalizeString(body?.password);
 
     if (!email || !password) {
       return this.sendJsonResponse(res, 400, {

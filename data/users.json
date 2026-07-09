@@ -1,0 +1,19 @@
+{
+  "users": [
+    {
+      "username": "persist-user",
+      "email": "persist-user@example.com",
+      "passwordHash": "fc156e71ff1264145a28eee1a7e55b5744f69686ca32e2e2dd6b73f4b2aa3c54ab4a1e068274f8c2755495116c94d54dade07f3c9784a6e92351e1ffb781cc74",
+      "passwordSalt": "c32bad533c791d2a51eccec50da2fe58",
+      "role": "user",
+      "authTokens": [
+        {
+          "token": "78c53dce898c8fce962384a8dfae422fe1a07d267438890e3b5327418c39f056",
+          "expires": "2026-08-08T14:16:43.331Z"
+        }
+      ],
+      "created_at": "2026-07-09T14:16:43.329Z",
+      "updated_at": "2026-07-09T14:16:43.331Z"
+    }
+  ]
+}
