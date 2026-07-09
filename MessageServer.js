@@ -28,11 +28,11 @@ export class MessageServer extends EventEmitter {
         : parseInt(process.env.PORT || defaultPort);
 
     // MongoDB configuration
-    this.mongodbUrl = (
+    this.mongodbUrl = this.normalizeMongoUrl(
       process.env.MONGODB_URI ||
       process.env.MONGODB_URL ||
       ""
-    ).trim();
+    );
     const envDbName = (process.env.MONGODB_DB_NAME || "").trim();
     this.mongoDbName =
       envDbName ||
@@ -116,6 +116,47 @@ export class MessageServer extends EventEmitter {
     return dbName ? decodeURIComponent(dbName) : null;
   }
 
+  normalizeMongoUrl(url) {
+    if (!url || typeof url !== "string") {
+      return "";
+    }
+
+    let normalized = url.trim();
+    if (!normalized) {
+      return "";
+    }
+
+    const hasTlsFlag = /(?:^|[?&])(tls|ssl)=/i.test(normalized);
+    const isAtlasLike =
+      normalized.startsWith("mongodb+srv://") ||
+      /mongodb(?:\.net|\.com)/i.test(normalized) ||
+      /atlas/i.test(normalized);
+
+    if (isAtlasLike && !hasTlsFlag) {
+      const separator = normalized.includes("?") ? "&" : "?";
+      normalized = `${normalized}${separator}tls=true`;
+    }
+
+    return normalized;
+  }
+
+  getMongoClientOptions() {
+    const isAtlasLike =
+      this.mongodbUrl.startsWith("mongodb+srv://") ||
+      /mongodb(?:\.net|\.com)/i.test(this.mongodbUrl) ||
+      /atlas/i.test(this.mongodbUrl);
+
+    return {
+      serverSelectionTimeoutMS: 10000,
+      connectTimeoutMS: 10000,
+      socketTimeoutMS: 20000,
+      retryWrites: true,
+      maxPoolSize: 5,
+      appName: "fiverr-agent-server",
+      tls: isAtlasLike,
+    };
+  }
+
   /**
    * Get MongoDB profiles collection (lazy initialization)
    */
@@ -129,9 +170,8 @@ export class MessageServer extends EventEmitter {
     }
 
     try {
-      this.mongoClient = new MongoClient(this.mongodbUrl, {
-        serverSelectionTimeoutMS: 5000,
-      });
+      const mongoOptions = this.getMongoClientOptions();
+      this.mongoClient = new MongoClient(this.mongodbUrl, mongoOptions);
 
       await this.mongoClient.connect();
       const db = this.mongoClient.db(this.mongoDbName);
@@ -145,8 +185,9 @@ export class MessageServer extends EventEmitter {
       );
       return this.mongoProfilesCollection;
     } catch (error) {
+      const details = error?.cause?.code || error?.code || "unknown";
       console.log(
-        `[WARNING] MessageServer: MongoDB connection failed: ${error.message}`,
+        `[WARNING] MessageServer: MongoDB connection failed (${details}): ${error.message}`,
       );
       this.mongoClient = null;
       this.mongoDb = null;
