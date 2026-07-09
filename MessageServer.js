@@ -246,7 +246,11 @@ export class MessageServer extends EventEmitter {
       return null;
     }
 
-    if (typeof candidate === "object" && candidate !== null && candidate.toString) {
+    if (
+      typeof candidate === "object" &&
+      candidate !== null &&
+      candidate.toString
+    ) {
       return candidate.toString();
     }
 
@@ -282,6 +286,7 @@ export class MessageServer extends EventEmitter {
         value._id,
         value.clientKey,
         value.name,
+        value.displayName,
         value.value,
         value?.profile?.username,
         value?.user?.username,
@@ -303,6 +308,32 @@ export class MessageServer extends EventEmitter {
       .replace(/[^a-z0-9]+/g, "");
   }
 
+  getClientLookupVariants(value) {
+    const normalized = this.normalizeClientLookupValue(value);
+    if (!normalized) {
+      return [];
+    }
+
+    const variants = new Set([normalized]);
+    const stripped = normalized.replace(
+      /^(user|client|conversation|conv|seller|profile|inbox|chat)([_-]?)/,
+      "",
+    );
+    if (stripped && stripped !== normalized) {
+      variants.add(stripped);
+    }
+
+    const withoutTrailingRole = normalized.replace(
+      /(?:[_-]?(?:user|client|seller|profile|conversation|conv|inbox|chat))$/,
+      "",
+    );
+    if (withoutTrailingRole && withoutTrailingRole !== normalized) {
+      variants.add(withoutTrailingRole);
+    }
+
+    return Array.from(variants).filter(Boolean);
+  }
+
   clientMatchesAssignedIds(client, assignedIds = []) {
     const candidateKeys = [
       client?._id,
@@ -318,7 +349,7 @@ export class MessageServer extends EventEmitter {
       client?.name,
       client?.displayName,
     ]
-      .map((item) => this.normalizeClientLookupValue(item))
+      .flatMap((item) => this.getClientLookupVariants(item))
       .filter(Boolean);
 
     if (candidateKeys.length === 0) {
@@ -326,7 +357,7 @@ export class MessageServer extends EventEmitter {
     }
 
     const normalizedAssignedIds = (assignedIds || [])
-      .map((item) => this.normalizeClientLookupValue(item))
+      .flatMap((item) => this.getClientLookupVariants(item))
       .filter(Boolean);
 
     if (normalizedAssignedIds.length === 0) {
@@ -342,11 +373,8 @@ export class MessageServer extends EventEmitter {
         return true;
       }
 
-      const delimiters = ["-", "_", "."];
-      return delimiters.some(
-        (delimiter) =>
-          candidateKey.startsWith(`${assignedId}${delimiter}`) ||
-          assignedId.startsWith(`${candidateKey}${delimiter}`),
+      return (
+        candidateKey.includes(assignedId) || assignedId.includes(candidateKey)
       );
     };
 
@@ -925,7 +953,8 @@ export class MessageServer extends EventEmitter {
         }
         updateDoc.editedText = body.text;
         updateDoc.text = body.text;
-        updateDoc.edited_by = user._id || user.id || user.email || user.username || null;
+        updateDoc.edited_by =
+          user._id || user.id || user.email || user.username || null;
         updateDoc.edited_at = new Date().toISOString();
       }
 
@@ -941,12 +970,17 @@ export class MessageServer extends EventEmitter {
 
       // Broadcast update to connected clients
       try {
-        const payload = { conversationId: updated.conversationId, message: updated };
+        const payload = {
+          conversationId: updated.conversationId,
+          message: updated,
+        };
         this.broadcastToExpoClients({ type: "message_updated", data: payload });
         for (const [sid, desktopWs] of this.connectedClients.entries()) {
           if (this.clientTypes.get(sid) === "desktop") {
             try {
-              desktopWs.send(JSON.stringify({ type: "message_updated", data: payload }));
+              desktopWs.send(
+                JSON.stringify({ type: "message_updated", data: payload }),
+              );
             } catch (error) {
               console.log(
                 `[WARNING] MessageServer: Error sending message_updated to desktop ${sid}: ${error.message}`,
@@ -955,7 +989,10 @@ export class MessageServer extends EventEmitter {
           }
         }
       } catch (err) {
-        console.error("[MessageServer] Failed to broadcast message_updated:", err?.message || err);
+        console.error(
+          "[MessageServer] Failed to broadcast message_updated:",
+          err?.message || err,
+        );
       }
 
       return this.sendJsonResponse(res, 200, { message: updated });
@@ -979,7 +1016,9 @@ export class MessageServer extends EventEmitter {
         for (const [sid, desktopWs] of this.connectedClients.entries()) {
           if (this.clientTypes.get(sid) === "desktop") {
             try {
-              desktopWs.send(JSON.stringify({ type: "message_deleted", data: payload }));
+              desktopWs.send(
+                JSON.stringify({ type: "message_deleted", data: payload }),
+              );
             } catch (error) {
               console.log(
                 `[WARNING] MessageServer: Error sending message_deleted to desktop ${sid}: ${error.message}`,
@@ -988,7 +1027,10 @@ export class MessageServer extends EventEmitter {
           }
         }
       } catch (err) {
-        console.error("[MessageServer] Failed to broadcast message_deleted:", err?.message || err);
+        console.error(
+          "[MessageServer] Failed to broadcast message_deleted:",
+          err?.message || err,
+        );
       }
 
       return this.sendJsonResponse(res, 200, { success: true });
@@ -2196,46 +2238,54 @@ export class MessageServer extends EventEmitter {
         );
       }
     } else if (msgType === "request_messages") {
-        if (this.storedMessageData) {
-          const currentUser = ws._user || null;
-          const canShowAll =
-            currentUser && this.normalizeRole(currentUser.role, currentUser) === "admin";
+      if (this.storedMessageData) {
+        const currentUser = ws._user || null;
+        const canShowAll =
+          currentUser &&
+          this.normalizeRole(currentUser.role, currentUser) === "admin";
 
-          // Load persisted payloads and send appropriate view depending on role
-          const persisted = await this.loadMessagesFromMongo();
-          let payloads = persisted.length > 0 ? persisted : [this.storedMessageData];
+        // Load persisted payloads and send appropriate view depending on role
+        const persisted = await this.loadMessagesFromMongo();
+        let payloads =
+          persisted.length > 0 ? persisted : [this.storedMessageData];
 
-          if (!canShowAll) {
-            const assignedIds = await this.getAssignedClientIds(currentUser);
-            const assignedSet = new Set(assignedIds.map((i) => String(i)));
-            payloads = (payloads || [])
-              .filter((p) => {
-                const conv = p.conversationId || (p.clients && p.clients[0] && (p.clients[0]._id || p.clients[0].id || p.clients[0].username));
-                if (!conv) return false;
-                return assignedSet.has(String(conv));
-              })
-              .map((p) => {
-                const copy = JSON.parse(JSON.stringify(p));
-                copy.messages = (copy.messages || []).map((m) => {
-                  const out = { ...m };
-                  if (out.editedText) {
-                    out.text = out.editedText;
-                    out.isEdited = true;
-                  }
-                  if (out.original_text) delete out.original_text;
-                  if (out.originalText) delete out.originalText;
-                  return out;
-                });
-                return copy;
+        if (!canShowAll) {
+          const assignedIds = await this.getAssignedClientIds(currentUser);
+          const assignedSet = new Set(assignedIds.map((i) => String(i)));
+          payloads = (payloads || [])
+            .filter((p) => {
+              const conv =
+                p.conversationId ||
+                (p.clients &&
+                  p.clients[0] &&
+                  (p.clients[0]._id ||
+                    p.clients[0].id ||
+                    p.clients[0].username));
+              if (!conv) return false;
+              return assignedSet.has(String(conv));
+            })
+            .map((p) => {
+              const copy = JSON.parse(JSON.stringify(p));
+              copy.messages = (copy.messages || []).map((m) => {
+                const out = { ...m };
+                if (out.editedText) {
+                  out.text = out.editedText;
+                  out.isEdited = true;
+                }
+                if (out.original_text) delete out.original_text;
+                if (out.originalText) delete out.originalText;
+                return out;
               });
-          }
+              return copy;
+            });
+        }
 
-          for (const pl of payloads || []) {
-            if (pl) {
-              ws.send(JSON.stringify({ type: "message_data", data: pl }));
-            }
+        for (const pl of payloads || []) {
+          if (pl) {
+            ws.send(JSON.stringify({ type: "message_data", data: pl }));
           }
         }
+      }
 
       const target = data.conversationId || data.username || null;
       if (target) {
@@ -2794,7 +2844,8 @@ export class MessageServer extends EventEmitter {
     // Snapshot data
     const currentUser = ws._user || null;
     const canShowAll =
-      currentUser && this.normalizeRole(currentUser.role, currentUser) === "admin";
+      currentUser &&
+      this.normalizeRole(currentUser.role, currentUser) === "admin";
     const snapshotMessage =
       this.storedMessageData && canShowAll
         ? JSON.parse(JSON.stringify(this.storedMessageData))
@@ -2814,7 +2865,11 @@ export class MessageServer extends EventEmitter {
 
       messagePayloads = messagePayloads
         .filter((p) => {
-          const conv = p.conversationId || (p.clients && p.clients[0] && (p.clients[0]._id || p.clients[0].id || p.clients[0].username));
+          const conv =
+            p.conversationId ||
+            (p.clients &&
+              p.clients[0] &&
+              (p.clients[0]._id || p.clients[0].id || p.clients[0].username));
           if (!conv) return false;
           return assignedSet.has(String(conv));
         })
