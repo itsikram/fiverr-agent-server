@@ -14,6 +14,36 @@
       ],
       "created_at": "2026-07-09T14:16:43.329Z",
       "updated_at": "2026-07-09T14:16:43.331Z"
+    },
+    {
+      "username": "mdikram295",
+      "email": "mdikram295@gmail.com",
+      "passwordHash": "24243b539483f60dc3938276bdcbff5938fa8986970ae694f9969d8d0338087f659a72747bca9e9850ec38121400402610e255d1a43737e69d856494734b047e",
+      "passwordSalt": "00d1c9e39ae9834df7288e34e7a3b3db",
+      "role": "admin",
+      "authTokens": [
+        {
+          "token": "c82061c84ef932ac40afc4771d059a664b7aa9962781832c924e907136617e7b",
+          "expires": "2026-08-28T10:08:57.810Z"
+        }
+      ],
+      "created_at": "2026-07-29T10:08:57.803Z",
+      "updated_at": "2026-07-29T10:08:57.810Z"
+    },
+    {
+      "username": "momimul",
+      "email": "mominul@gmail.com",
+      "passwordHash": "f0df42f9ec7ef254c07f94f4c6e6755116094d88c862bfcecda14e656ded44cbb20c43b9d50b9716eb8505b5ad166f98eab452a7c4bf42e89d61de5f424e0f35",
+      "passwordSalt": "1777ff28847711286fe7247bf6f3ae8e",
+      "role": "user",
+      "authTokens": [
+        {
+          "token": "24063df349eadd4914d171f840c059976323620cb3b23e383a1992187776577f",
+          "expires": "2026-08-28T10:12:45.428Z"
+        }
+      ],
+      "created_at": "2026-07-29T10:10:25.764Z",
+      "updated_at": "2026-07-29T10:12:45.428Z"
     }
   ]
 }
