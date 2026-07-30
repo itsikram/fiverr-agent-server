@@ -88,8 +88,7 @@ export class MessageServer extends EventEmitter {
     // Push notification tokens (session_id -> pushToken)
     this.pushTokens = new Map(); // session_id -> pushToken
 
-    // Seller profiles
-    this.sellerProfilesPath = path.join(__dirname, "seller_profiles.json");
+    // Seller profiles (persisted in MongoDB)
     this.sellerProfiles = new Map(); // username -> profile
     this.sellerProfile = null; // current (most recently received)
 
@@ -1768,87 +1767,64 @@ export class MessageServer extends EventEmitter {
   /**
    * Load seller profiles from MongoDB or JSON file
    */
-  async loadSellerProfiles() {
-    // Try MongoDB first
-    const coll = await this.getMongoProfilesCollection();
-    if (coll) {
-      try {
-        const cursor = coll.find({});
-        const profiles = new Map();
+  parseSellerProfilesFromObject(data) {
+    const profiles = new Map();
+    if (typeof data !== "object" || data === null) {
+      return profiles;
+    }
 
-        for await (const doc of cursor) {
-          const username =
-            doc.username || (typeof doc._id === "string" ? doc._id : null);
-          if (username) {
-            const entry = { ...doc };
-            delete entry._id;
-            entry.username = username;
-            profiles.set(username, entry);
-          }
-        }
+    for (const value of Object.values(data)) {
+      if (typeof value === "object" && value !== null && value.username) {
+        profiles.set(value.username, value);
+      }
+    }
+    return profiles;
+  }
 
-        if (profiles.size > 0) {
-          this.sellerProfiles = profiles;
-          // Get most recent profile
-          let latest = null;
-          let latestTime = "";
-          for (const profile of profiles.values()) {
-            const updatedAt = profile.updated_at || "";
-            if (updatedAt > latestTime) {
-              latestTime = updatedAt;
-              latest = profile;
-            }
-          }
-          this.sellerProfile = latest;
-          console.log(
-            `[DEBUG] MessageServer: Loaded ${profiles.size} seller profile(s) from MongoDB, current: ${this.sellerProfile?.username}`,
-          );
-          return;
-        }
-      } catch (error) {
-        console.log(
-          `[WARNING] MessageServer: MongoDB load failed, falling back to file: ${error.message}`,
-        );
+  pickLatestSellerProfile(profiles) {
+    let latest = null;
+    let latestTime = "";
+    for (const profile of profiles.values()) {
+      const updatedAt = profile.updated_at || "";
+      if (updatedAt > latestTime) {
+        latestTime = updatedAt;
+        latest = profile;
+      }
+    }
+    return latest;
+  }
+
+  async loadSellerProfilesFromMongo(coll) {
+    const profiles = new Map();
+    const cursor = coll.find({});
+
+    for await (const doc of cursor) {
+      const username =
+        doc.username || (typeof doc._id === "string" ? doc._id : null);
+      if (username) {
+        const entry = { ...doc };
+        delete entry._id;
+        entry.username = username;
+        profiles.set(username, entry);
       }
     }
 
-    // Fallback: JSON file
+    return profiles;
+  }
+
+  async migrateSellerProfilesFromJsonFiles() {
+    const profiles = new Map();
+    const jsonPath = path.join(__dirname, "seller_profiles.json");
+
     try {
-      if (fs.existsSync(this.sellerProfilesPath)) {
-        const data = JSON.parse(
-          fs.readFileSync(this.sellerProfilesPath, "utf-8"),
-        );
-        const profiles = new Map();
-
-        if (typeof data === "object" && data !== null) {
-          for (const [key, value] of Object.entries(data)) {
-            if (typeof value === "object" && value !== null && value.username) {
-              profiles.set(value.username, value);
-            }
-          }
-        }
-
-        if (profiles.size > 0) {
-          this.sellerProfiles = profiles;
-          // Get most recent profile
-          let latest = null;
-          let latestTime = "";
-          for (const profile of profiles.values()) {
-            const updatedAt = profile.updated_at || "";
-            if (updatedAt > latestTime) {
-              latestTime = updatedAt;
-              latest = profile;
-            }
-          }
-          this.sellerProfile = latest;
-          console.log(
-            `[DEBUG] MessageServer: Loaded ${profiles.size} seller profile(s) from file, current: ${this.sellerProfile?.username}`,
-          );
-        } else {
-          this.sellerProfile = null;
+      if (fs.existsSync(jsonPath)) {
+        const data = JSON.parse(fs.readFileSync(jsonPath, "utf-8"));
+        for (const [username, profile] of this.parseSellerProfilesFromObject(
+          data,
+        )) {
+          profiles.set(username, profile);
         }
       } else {
-        // Try legacy seller_profile.json
         const legacyPath = path.join(__dirname, "seller_profile.json");
         if (fs.existsSync(legacyPath)) {
           const single = JSON.parse(fs.readFileSync(legacyPath, "utf-8"));
@@ -1857,24 +1833,56 @@ export class MessageServer extends EventEmitter {
             single !== null &&
             single.username
           ) {
-            const username = single.username;
-            this.sellerProfiles.set(username, single);
-            this.sellerProfile = single;
-            console.log(
-              `[DEBUG] MessageServer: Migrated legacy seller_profile.json, username=${username}`,
-            );
-          } else {
-            this.sellerProfiles = new Map();
-            this.sellerProfile = null;
+            profiles.set(single.username, single);
           }
-        } else {
-          this.sellerProfiles = new Map();
-          this.sellerProfile = null;
         }
       }
     } catch (error) {
       console.log(
-        `[WARNING] MessageServer: Could not load seller profiles: ${error.message}`,
+        `[WARNING] MessageServer: Could not read legacy seller profile JSON: ${error.message}`,
+      );
+    }
+
+    return profiles;
+  }
+
+  async loadSellerProfiles() {
+    const coll = await this.getMongoProfilesCollection();
+    if (!coll) {
+      console.log(
+        "[WARNING] MessageServer: MongoDB unavailable; seller profiles will not persist across restarts",
+      );
+      this.sellerProfiles = new Map();
+      this.sellerProfile = null;
+      return;
+    }
+
+    try {
+      let profiles = await this.loadSellerProfilesFromMongo(coll);
+
+      if (profiles.size === 0) {
+        const migrated = await this.migrateSellerProfilesFromJsonFiles();
+        if (migrated.size > 0) {
+          this.sellerProfiles = migrated;
+          await this.saveSellerProfiles();
+          profiles = migrated;
+          console.log(
+            `[DEBUG] MessageServer: Migrated ${profiles.size} seller profile(s) from JSON to MongoDB`,
+          );
+        }
+      }
+
+      this.sellerProfiles = profiles;
+      this.sellerProfile = this.pickLatestSellerProfile(profiles);
+
+      if (profiles.size > 0) {
+        console.log(
+          `[DEBUG] MessageServer: Loaded ${profiles.size} seller profile(s) from MongoDB, current: ${this.sellerProfile?.username}`,
+        );
+      }
+    } catch (error) {
+      console.log(
+        `[ERROR] MessageServer: Could not load seller profiles from MongoDB: ${error.message}`,
       );
       this.sellerProfiles = new Map();
       this.sellerProfile = null;
@@ -1882,53 +1890,38 @@ export class MessageServer extends EventEmitter {
   }
 
   /**
-   * Save seller profiles to MongoDB and JSON file
+   * Save seller profiles to MongoDB
    */
   async saveSellerProfiles() {
     if (this.sellerProfiles.size === 0) {
       return;
     }
 
-    // Save to MongoDB
     const coll = await this.getMongoProfilesCollection();
-    if (coll) {
-      try {
-        for (const [username, doc] of this.sellerProfiles.entries()) {
-          const payload = { ...doc };
-          delete payload._id;
-          await coll.replaceOne(
-            { _id: username },
-            { ...payload, _id: username },
-            { upsert: true },
-          );
-        }
-        console.log(
-          `[DEBUG] MessageServer: Saved ${this.sellerProfiles.size} seller profile(s) to MongoDB`,
-        );
-      } catch (error) {
-        console.log(
-          `[ERROR] MessageServer: Could not save seller profiles to MongoDB: ${error.message}`,
-        );
-      }
+    if (!coll) {
+      console.log(
+        "[ERROR] MessageServer: MongoDB unavailable; could not save seller profiles",
+      );
+      return;
     }
 
-    // Save to JSON file
     try {
-      const data = Object.fromEntries(this.sellerProfiles);
-      fs.writeFileSync(
-        this.sellerProfilesPath,
-        JSON.stringify(data, null, 2),
-        "utf-8",
-      );
-      console.log(
-        `[DEBUG] MessageServer: Saved ${this.sellerProfiles.size} seller profile(s) to ${this.sellerProfilesPath}`,
-      );
-    } catch (error) {
-      if (!this.mongodbUrl) {
-        console.log(
-          `[ERROR] MessageServer: Could not save seller_profiles.json: ${error.message}`,
+      for (const [username, doc] of this.sellerProfiles.entries()) {
+        const payload = { ...doc };
+        delete payload._id;
+        await coll.replaceOne(
+          { _id: username },
+          { ...payload, _id: username },
+          { upsert: true },
         );
       }
+      console.log(
+        `[DEBUG] MessageServer: Saved ${this.sellerProfiles.size} seller profile(s) to MongoDB`,
+      );
+    } catch (error) {
+      console.log(
+        `[ERROR] MessageServer: Could not save seller profiles to MongoDB: ${error.message}`,
+      );
     }
   }
 
@@ -2428,11 +2421,13 @@ export class MessageServer extends EventEmitter {
     });
 
     // Send push notifications to all registered tokens (works even when app is closed)
+    /*
     this.sendPushNotificationForMessage(data).catch((error) => {
       console.error(
         `[ERROR] MessageServer: Error sending push notification: ${error.message}`,
       );
     });
+    */
 
     console.log(
       `[DEBUG] MessageServer: New message detection signal emitted and data stored`,
@@ -2570,11 +2565,13 @@ export class MessageServer extends EventEmitter {
     });
 
     // Send push notifications to all registered tokens (works even when app is closed)
+    /*
     this.sendPushNotificationForNewClient(newClientInfo).catch((error) => {
       console.error(
         `[ERROR] MessageServer: Error sending push notification for new client: ${error.message}`,
       );
     });
+    */
 
     console.log(
       `[DEBUG] MessageServer: New client detection signal emitted and notification sent`,
