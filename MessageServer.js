@@ -3102,36 +3102,7 @@ export class MessageServer extends EventEmitter {
       }
 
       if (target && data.triggerExtraction === true) {
-        const browserClients = Array.from(
-          this.connectedClients.entries(),
-        ).filter(([sid]) => this.clientTypes.get(sid) === "browser");
-
-        if (browserClients.length > 0) {
-          const message = JSON.stringify({
-            type: "commands",
-            commands: [
-              {
-                type: "trigger",
-                action: "extract_messages",
-                conversationId: target,
-                username: target,
-              },
-            ],
-          });
-
-          for (const [, browserWs] of browserClients) {
-            try {
-              browserWs.send(message);
-              console.log(
-                `[DEBUG] MessageServer: Message extraction triggered for ${target}`,
-              );
-            } catch (error) {
-              console.log(
-                `[WARNING] MessageServer: Error forwarding message extraction trigger to browser client: ${error.message}`,
-              );
-            }
-          }
-        }
+        this.scheduleBrowserMessageExtraction(target, [0, 4000, 10000, 20000]);
       }
     } else if (msgType === "request_client_data") {
       const clientKey = data.username || data.conversationId;
@@ -3295,6 +3266,10 @@ export class MessageServer extends EventEmitter {
               `[WARNING] MessageServer: Error forwarding click_client to browser client: ${error.message}`,
             );
           }
+        }
+
+        if (username && !useFirstClient) {
+          this.scheduleBrowserMessageExtraction(username);
         }
 
         ws.send(
@@ -3852,6 +3827,60 @@ export class MessageServer extends EventEmitter {
         `[WARNING] MessageServer: Could not send sync_complete to Expo: ${error.message}`,
       );
     }
+  }
+
+  /**
+   * Ask connected browser extensions to extract messages after inbox has time to load.
+   */
+  scheduleBrowserMessageExtraction(target, delaysMs = [4000, 10000, 20000]) {
+    const normalized = String(target || "")
+      .trim()
+      .replace(/^@/, "")
+      .replace(
+        /^(user|client|conversation|conv|seller|profile|inbox|chat)[_:-]?/i,
+        "",
+      );
+
+    if (!normalized) {
+      return;
+    }
+
+    const sendExtract = () => {
+      const browserClients = Array.from(this.connectedClients.entries()).filter(
+        ([sid]) => this.clientTypes.get(sid) === "browser",
+      );
+
+      if (browserClients.length === 0) {
+        return;
+      }
+
+      const payload = JSON.stringify({
+        type: "commands",
+        commands: [
+          {
+            type: "trigger",
+            action: "extract_messages",
+            conversationId: normalized,
+            username: normalized,
+          },
+        ],
+      });
+
+      for (const [, browserWs] of browserClients) {
+        try {
+          browserWs.send(payload);
+          console.log(
+            `[DEBUG] MessageServer: Scheduled message extraction triggered for ${normalized}`,
+          );
+        } catch (error) {
+          console.log(
+            `[WARNING] MessageServer: Error forwarding scheduled message extraction: ${error.message}`,
+          );
+        }
+      }
+    };
+
+    delaysMs.forEach((delay) => setTimeout(sendExtract, delay));
   }
 
   /**
