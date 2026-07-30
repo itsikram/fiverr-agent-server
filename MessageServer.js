@@ -533,7 +533,7 @@ export class MessageServer extends EventEmitter {
       return null;
     }
 
-    const candidate =
+    let candidate =
       data.conversationId ||
       data.conversation_id ||
       data.clientId ||
@@ -545,7 +545,14 @@ export class MessageServer extends EventEmitter {
       data?.clients?.[0]?.clientId ||
       null;
 
-    return candidate || null;
+    if (!candidate && data.url) {
+      const match = String(data.url).match(/\/inbox\/([^/?#]+)/i);
+      if (match && match[1]) {
+        candidate = match[1];
+      }
+    }
+
+    return candidate ? String(candidate).trim().replace(/^@/, "") : null;
   }
 
   normalizeClientLookupValue(value) {
@@ -696,10 +703,40 @@ export class MessageServer extends EventEmitter {
     targetConversationId = null,
   ) {
     const isAdmin = user && this.normalizeRole(user.role, user) === "admin";
+    const normalizedTarget =
+      this.normalizeClientLookupValue(targetConversationId);
+
     if (isAdmin) {
-      return (payloads || []).map((payload) =>
+      const allPayloads = (payloads || []).map((payload) =>
         payload ? JSON.parse(JSON.stringify(payload)) : payload,
       );
+      if (!normalizedTarget) {
+        return allPayloads;
+      }
+      return allPayloads.filter((payload) => {
+        if (!payload) return false;
+        const candidateValues = [
+          payload?.conversationId,
+          payload?.conversation_id,
+          payload?.username,
+          payload?.clientUsername,
+          payload?.client,
+          payload?.clients?.[0]?.conversationId,
+          payload?.clients?.[0]?.conversation_id,
+          payload?.clients?.[0]?.username,
+          payload?.clients?.[0]?.clientUsername,
+          payload?.clients?.[0]?.client,
+          payload?.clients?.[0]?.id,
+          payload?.clients?.[0]?.clientId,
+        ].filter(Boolean);
+
+        return candidateValues.some((value) => {
+          const normalizedValue = this.normalizeClientLookupValue(value);
+          return Boolean(
+            normalizedValue && normalizedValue === normalizedTarget,
+          );
+        });
+      });
     }
 
     const assignedIds = await this.getAssignedClientIds(user);
@@ -707,8 +744,6 @@ export class MessageServer extends EventEmitter {
       return [];
     }
 
-    const normalizedTarget =
-      this.normalizeClientLookupValue(targetConversationId);
     const filteredPayloads = [];
 
     for (const payload of payloads || []) {
@@ -1906,10 +1941,34 @@ export class MessageServer extends EventEmitter {
         .sort({ timestamp: 1, created_at: 1 })
         .toArray();
 
+      const isGeneric = (val) => {
+        if (!val) return true;
+        const norm = String(val)
+          .trim()
+          .toLowerCase()
+          .replace(/^@/, "")
+          .replace(/[^a-z0-9]+/g, "");
+        return (
+          !norm ||
+          [
+            "conversation",
+            "default",
+            "undefined",
+            "null",
+            "messages",
+            "client",
+            "objectobject",
+          ].includes(norm) ||
+          norm.startsWith("message")
+        );
+      };
+
       const grouped = new Map();
       for (const doc of docs) {
         const conversationId =
-          doc.conversationId || doc.clientId || doc._id || null;
+          (!isGeneric(doc.conversationId) ? doc.conversationId : null) ||
+          (!isGeneric(doc.clientId) ? doc.clientId : null);
+
         if (!conversationId) {
           continue;
         }
@@ -1927,7 +1986,7 @@ export class MessageServer extends EventEmitter {
           ...doc,
           text: doc.text || doc.content || doc.message || "",
           time: doc.timestamp || doc.time || doc.date,
-          sender: doc.sender || (doc.isFromMe ? "me" : "client"),
+          sender: doc.sender || (doc.isFromMe ? "me" : conversationId),
           isFromMe: Boolean(doc.isFromMe),
         });
       }
@@ -2020,27 +2079,81 @@ export class MessageServer extends EventEmitter {
       const clientKeyForId =
         conversationId || clientId || this.getClientLookupKey(data) || null;
 
+      const isGeneric = (val) => {
+        if (!val) return true;
+        const norm = String(val)
+          .trim()
+          .toLowerCase()
+          .replace(/^@/, "")
+          .replace(/[^a-z0-9]+/g, "");
+        return (
+          !norm ||
+          [
+            "conversation",
+            "default",
+            "undefined",
+            "null",
+            "messages",
+            "client",
+            "objectobject",
+          ].includes(norm) ||
+          norm.startsWith("message")
+        );
+      };
+
       for (const [index, message] of messages.entries()) {
+        const msgSender = message.senderUsername || message.sender;
+        const isValidSpecificSender =
+          msgSender &&
+          !isGeneric(msgSender) &&
+          msgSender !== "me" &&
+          msgSender !== "client";
+
+        // Verification: If message is from client (isFromMe is false), the sender username IS the true client ID
+        const perMsgSenderId =
+          !message.isFromMe && isValidSpecificSender ? msgSender : null;
+
         const safeConversationId =
-          conversationId ||
-          clientId ||
-          this.getClientLookupKey(message) ||
-          "conversation";
+          (!isGeneric(perMsgSenderId) ? perMsgSenderId : null) ||
+          (!isGeneric(conversationId) ? conversationId : null) ||
+          (!isGeneric(clientId) ? clientId : null) ||
+          (!isGeneric(clientKeyForId) ? clientKeyForId : null) ||
+          (!isGeneric(this.getClientLookupKey(message))
+            ? this.getClientLookupKey(message)
+            : null);
+
+        if (!safeConversationId) {
+          console.warn(
+            "[MessageServer] Skipping message save: no specific client conversation ID",
+            message,
+          );
+          continue;
+        }
+
         const timestampValue =
           message.timestamp ||
           message.time ||
           message.date ||
           new Date().toISOString();
 
-        const messageId =
-          message.id || `${safeConversationId}_${timestampValue}_${index}`;
+        const cleanMsgId =
+          message.id && !String(message.id).startsWith("message-")
+            ? message.id
+            : `msg_${index}`;
+
+        const messageId = `${safeConversationId}_${cleanMsgId}_${timestampValue}`;
         const payload = {
           ...message,
           _id: messageId,
           id: messageId,
           clientId: safeConversationId,
           conversationId: safeConversationId,
-          sender: message.sender || (message.isFromMe ? "me" : "client"),
+          sender:
+            message.sender && message.sender !== "client"
+              ? message.sender
+              : message.isFromMe
+                ? "me"
+                : safeConversationId,
           text: message.text || message.content || message.message || "",
           timestamp: timestampValue,
           isFromMe: Boolean(message.isFromMe),
@@ -2161,9 +2274,16 @@ export class MessageServer extends EventEmitter {
     console.log(
       `[DEBUG] MessageServer: _on_message_received() called with data`,
     );
-    console.log(
-      `[DEBUG] MessageServer: Message count: ${(data.messages || []).length}`,
-    );
+    const messageCount = (data.messages || []).length;
+    console.log(`[DEBUG] MessageServer: Message count: ${messageCount}`);
+
+    const conversationId = this.getMessageConversationKey(data);
+    if (messageCount === 0 && conversationId) {
+      console.log(
+        `[WARNING] MessageServer: Ignoring empty message_data for conversationId=${conversationId}`,
+      );
+      return;
+    }
 
     const normalizedData = JSON.parse(JSON.stringify(data));
     this.storedMessageData = normalizedData;
@@ -2941,7 +3061,7 @@ export class MessageServer extends EventEmitter {
         }
       }
 
-      if (target) {
+      if (target && data.triggerExtraction === true) {
         const browserClients = Array.from(
           this.connectedClients.entries(),
         ).filter(([sid]) => this.clientTypes.get(sid) === "browser");
@@ -3008,14 +3128,24 @@ export class MessageServer extends EventEmitter {
       }
     } else if (msgType === "trigger") {
       const action = data.action;
+      const targetConversationId = data.conversationId || data.username || null;
       console.log(
-        `[DEBUG] MessageServer: Expo client requesting trigger: ${action}`,
+        `[DEBUG] MessageServer: Expo client requesting trigger: ${action}${
+          targetConversationId ? ` target=${targetConversationId}` : ""
+        }`,
       );
 
       const command = {
         type: "trigger",
         action: action,
       };
+
+      // Preserve the target identifier so the extension activates and extracts
+      // the correct conversation instead of whatever tab/conversation is currently open.
+      if (data.conversationId || data.username) {
+        command.conversationId = data.conversationId || data.username;
+        command.username = data.username || data.conversationId;
+      }
 
       // Forward to browser extension clients
       const browserClients = Array.from(this.connectedClients.entries()).filter(
@@ -3054,7 +3184,14 @@ export class MessageServer extends EventEmitter {
         }),
       );
     } else if (msgType === "click_client" || msgType === "clickFirstClient") {
-      const username = data.username;
+      const rawUser = data.username || data.conversationId || "";
+      const username = String(rawUser)
+        .trim()
+        .replace(/^@/, "")
+        .replace(
+          /^(user|client|conversation|conv|seller|profile|inbox|chat)[_:-]?/i,
+          "",
+        );
       const useFirstClient =
         data.useFirstClient || msgType === "clickFirstClient";
       const timestamp = new Date().toISOString();

@@ -136,3 +136,36 @@ test("non-admin message refreshes are filtered by assigned clients and the selec
   assert.equal(filtered.length, 1);
   assert.equal(filtered[0].conversationId, "client-alpha");
 });
+
+test("admin message refreshes are filtered by selected target when provided", async () => {
+  const server = new MessageServer(0);
+  const adminUser = { _id: "admin-1", email: "admin@example.com", role: "admin" };
+
+  const payloads = [
+    {
+      conversationId: "client-alpha",
+      messages: [{ text: "hi alpha" }],
+      clients: [{ username: "client-alpha" }],
+    },
+    {
+      conversationId: "client-beta",
+      messages: [{ text: "hi beta" }],
+      clients: [{ username: "client-beta" }],
+    },
+  ];
+
+  const filteredTargeted = await server.filterMessagePayloadsForUser(
+    adminUser,
+    payloads,
+    "client-alpha",
+  );
+  assert.equal(filteredTargeted.length, 1);
+  assert.equal(filteredTargeted[0].conversationId, "client-alpha");
+
+  const filteredUntargeted = await server.filterMessagePayloadsForUser(
+    adminUser,
+    payloads,
+    null,
+  );
+  assert.equal(filteredUntargeted.length, 2);
+});
