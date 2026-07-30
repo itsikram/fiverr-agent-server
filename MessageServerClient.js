@@ -48,7 +48,7 @@ const getDefaultServerUrl = () => {
   }
   
   // Default fallback
-  return 'wss://fiverr-agent-03vs.onrender.com';
+  return 'wss://fiverr-agent-server.onrender.com';
 };
 
 const DEFAULT_LIVE_SERVER_WS_URL = getDefaultServerUrl();

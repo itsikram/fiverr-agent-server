@@ -2808,6 +2808,46 @@ export class MessageServer extends EventEmitter {
       } else {
         // Browser extension
         await this.sendPendingCommands(newSessionId, ws);
+        if (this.sellerProfile?.username) {
+          this.browserProfileBySession.set(
+            newSessionId,
+            this.sellerProfile.username,
+          );
+        }
+        if (this.sellerProfile) {
+          const online = this.getOnlineUsernames();
+          ws.send(
+            JSON.stringify({
+              type: "seller_profile",
+              data: {
+                ...this.sellerProfile,
+                online: online.has(this.sellerProfile.username),
+              },
+            }),
+          );
+        }
+        if (this.sellerProfiles.size > 0) {
+          ws.send(
+            JSON.stringify({
+              type: "seller_profiles",
+              data: this.getSellerProfilesWithOnline(),
+            }),
+          );
+        }
+        this.broadcastToExpoClients({
+          type: "seller_profiles",
+          data: this.getSellerProfilesWithOnline(),
+        });
+        if (this.sellerProfile) {
+          const online = this.getOnlineUsernames();
+          this.broadcastToExpoClients({
+            type: "seller_profile",
+            data: {
+              ...this.sellerProfile,
+              online: online.has(this.sellerProfile.username),
+            },
+          });
+        }
       }
     } else if (msgType === "message_data") {
       const messageData = data.data || data;
@@ -3256,19 +3296,28 @@ export class MessageServer extends EventEmitter {
             );
           }
         }
+
+        ws.send(
+          JSON.stringify({
+            type: "ack",
+            status: "success",
+            message: `Click client command sent: ${username || "first client"}`,
+          }),
+        );
       } else {
         console.log(
           `[WARNING] MessageServer: No browser extension clients connected to forward click_client`,
         );
+        ws.send(
+          JSON.stringify({
+            type: "ack",
+            status: "error",
+            message:
+              "Browser extension is not connected. Open Fiverr in Chrome, click the extension icon, and activate the Fiverr tab.",
+          }),
+        );
       }
-
-      ws.send(
-        JSON.stringify({
-          type: "ack",
-          status: "success",
-          message: `Click client command sent: ${username || "first client"}`,
-        }),
-      );
+      return;
     } else if (msgType === "send_message") {
       const messageText = data.message;
       const conversationId = data.conversationId;
