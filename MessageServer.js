@@ -74,6 +74,9 @@ export class MessageServer extends EventEmitter {
     this.pendingClientListTrigger = false;
     this.pendingSendMessage = null;
     this.pendingClickCommands = [];
+    this.scheduledExtractionTimeouts = [];
+    this.latestExtractionTarget = null;
+    this.extractionGeneration = 0;
 
     // Data storage for Expo Go clients
     this.storedMessageData = null;
@@ -3102,7 +3105,7 @@ export class MessageServer extends EventEmitter {
       }
 
       if (target && data.triggerExtraction === true) {
-        this.scheduleBrowserMessageExtraction(target, [0, 4000, 10000, 20000]);
+        this.scheduleBrowserMessageExtraction(target, [4000, 10000, 20000]);
       }
     } else if (msgType === "request_client_data") {
       const clientKey = data.username || data.conversationId;
@@ -3156,6 +3159,10 @@ export class MessageServer extends EventEmitter {
       if (data.conversationId || data.username) {
         command.conversationId = data.conversationId || data.username;
         command.username = data.username || data.conversationId;
+      }
+
+      if (data.scrollToLoadAll === true) {
+        command.scrollToLoadAll = true;
       }
 
       // Forward to browser extension clients
@@ -3839,13 +3846,31 @@ export class MessageServer extends EventEmitter {
       .replace(
         /^(user|client|conversation|conv|seller|profile|inbox|chat)[_:-]?/i,
         "",
-      );
+      )
+      .toLowerCase();
 
     if (!normalized) {
       return;
     }
 
+    for (const timeoutId of this.scheduledExtractionTimeouts) {
+      clearTimeout(timeoutId);
+    }
+    this.scheduledExtractionTimeouts = [];
+    this.latestExtractionTarget = normalized;
+    const generation = ++this.extractionGeneration;
+
     const sendExtract = () => {
+      if (
+        this.extractionGeneration !== generation ||
+        this.latestExtractionTarget !== normalized
+      ) {
+        console.log(
+          `[DEBUG] MessageServer: Skipping stale scheduled extraction for ${normalized}`,
+        );
+        return;
+      }
+
       const browserClients = Array.from(this.connectedClients.entries()).filter(
         ([sid]) => this.clientTypes.get(sid) === "browser",
       );
@@ -3880,7 +3905,10 @@ export class MessageServer extends EventEmitter {
       }
     };
 
-    delaysMs.forEach((delay) => setTimeout(sendExtract, delay));
+    delaysMs.forEach((delay) => {
+      const timeoutId = setTimeout(sendExtract, delay);
+      this.scheduledExtractionTimeouts.push(timeoutId);
+    });
   }
 
   /**
