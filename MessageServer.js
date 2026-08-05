@@ -2681,6 +2681,8 @@ export class MessageServer extends EventEmitter {
         this.broadcastSellerOnlineStatus();
       }
 
+      this.broadcastExpoPresenceToBrowsers();
+
       console.log(
         `[DEBUG] MessageServer: Cleaned up connection for session: ${sessionId}`,
       );
@@ -2688,6 +2690,36 @@ export class MessageServer extends EventEmitter {
       console.log(
         `[DEBUG] MessageServer: Ignoring stale close for superseded session: ${sessionId}`,
       );
+    }
+  }
+
+  /**
+   * True when at least one Expo app is connected and therefore owns auto-reply
+   * timing. The extension uses this to stay out of the way until Expo is gone.
+   */
+  isExpoConnected() {
+    for (const sessionId of this.connectedClients.keys()) {
+      if (this.clientTypes.get(sessionId) === "expo") {
+        return true;
+      }
+    }
+    return false;
+  }
+
+  broadcastExpoPresenceToBrowsers() {
+    const expoConnected = this.isExpoConnected();
+    const payload = JSON.stringify({
+      type: "commands",
+      commands: [{ type: "set_expo_presence", expoConnected }],
+    });
+
+    for (const [sessionId, browserWs] of this.connectedClients.entries()) {
+      if (this.clientTypes.get(sessionId) !== "browser") continue;
+      try {
+        browserWs.send(payload);
+      } catch (_error) {
+        // Socket is closing; cleanup will handle it.
+      }
     }
   }
 
@@ -2823,6 +2855,8 @@ export class MessageServer extends EventEmitter {
         `[DEBUG] MessageServer: Total connected clients: ${this.connectedClients.size}`,
       );
 
+      this.broadcastExpoPresenceToBrowsers();
+
       // Send connection confirmation
       try {
         const confirmMessage = JSON.stringify({
@@ -2909,6 +2943,17 @@ export class MessageServer extends EventEmitter {
           });
         }
       }
+    } else if (msgType === "send_message_result") {
+      // Relay the extension's real send outcome so Expo can retry instead of
+      // assuming a socket write meant the message reached Fiverr.
+      const result = data.data || {};
+      console.log(
+        `[DEBUG] MessageServer: Send result for ${result.conversationId || "unknown"}: ${result.success ? "delivered" : `failed (${result.error || "unknown"})`}`,
+      );
+      this.broadcastToExpoClients({
+        type: "send_message_result",
+        data: result,
+      });
     } else if (msgType === "message_data") {
       const messageData = data.data || data;
       console.log(`[DEBUG] MessageServer: Received message data via WebSocket`);
@@ -4032,14 +4077,17 @@ export class MessageServer extends EventEmitter {
   async sendPendingCommands(sessionId, ws) {
     const commands = [];
 
-    if (
-      this.clientTypes.get(sessionId) === "browser" &&
-      this.autoReplyConfig
-    ) {
+    if (this.clientTypes.get(sessionId) === "browser") {
       commands.push({
-        type: "set_auto_reply_config",
-        config: this.autoReplyConfig,
+        type: "set_expo_presence",
+        expoConnected: this.isExpoConnected(),
       });
+      if (this.autoReplyConfig) {
+        commands.push({
+          type: "set_auto_reply_config",
+          config: this.autoReplyConfig,
+        });
+      }
     }
 
     if (this.pendingTrigger) {
