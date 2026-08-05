@@ -3417,16 +3417,31 @@ export class MessageServer extends EventEmitter {
           commands: [command],
         });
 
-        for (const [, browserWs] of browserClients) {
-          try {
-            browserWs.send(message);
-            console.log(
-              `[DEBUG] MessageServer: Send message command forwarded to browser client`,
-            );
-          } catch (error) {
-            console.log(
-              `[WARNING] MessageServer: Error forwarding send_message to browser client: ${error.message}`,
-            );
+        // Forward to exactly one browser extension to avoid duplicate Fiverr sends
+        // when multiple extension sockets are connected.
+        const [, browserWs] = browserClients[0];
+        try {
+          browserWs.send(message);
+          console.log(
+            `[DEBUG] MessageServer: Send message command forwarded to browser client (1 of ${browserClients.length})`,
+          );
+        } catch (error) {
+          console.log(
+            `[WARNING] MessageServer: Error forwarding send_message to browser client: ${error.message}`,
+          );
+          // Fall back to other browser clients if the first one failed
+          for (let i = 1; i < browserClients.length; i += 1) {
+            try {
+              browserClients[i][1].send(message);
+              console.log(
+                `[DEBUG] MessageServer: Send message command forwarded to fallback browser client`,
+              );
+              break;
+            } catch (fallbackError) {
+              console.log(
+                `[WARNING] MessageServer: Fallback browser client also failed: ${fallbackError.message}`,
+              );
+            }
           }
         }
       } else {
