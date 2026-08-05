@@ -3500,6 +3500,8 @@ export class MessageServer extends EventEmitter {
         ([sid]) => this.clientTypes.get(sid) === "browser",
       );
 
+      let forwardedToBrowser = false;
+
       if (browserClients.length > 0) {
         const message = JSON.stringify({
           type: "commands",
@@ -3511,6 +3513,7 @@ export class MessageServer extends EventEmitter {
         const [, browserWs] = browserClients[0];
         try {
           browserWs.send(message);
+          forwardedToBrowser = true;
           console.log(
             `[DEBUG] MessageServer: Send message command forwarded to browser client (1 of ${browserClients.length})`,
           );
@@ -3522,6 +3525,7 @@ export class MessageServer extends EventEmitter {
           for (let i = 1; i < browserClients.length; i += 1) {
             try {
               browserClients[i][1].send(message);
+              forwardedToBrowser = true;
               console.log(
                 `[DEBUG] MessageServer: Send message command forwarded to fallback browser client`,
               );
@@ -3540,11 +3544,28 @@ export class MessageServer extends EventEmitter {
         this.pendingSendMessage = command;
       }
 
+      if (!forwardedToBrowser) {
+        // Say so now rather than leaving the sender waiting for a confirmation
+        // that no extension will ever produce.
+        this.broadcastToExpoClients({
+          type: "send_message_result",
+          data: {
+            conversationId: command.conversationId,
+            autoReply: command.autoReply,
+            success: false,
+            error:
+              "Browser extension is not connected to the server, so nothing could be typed into Fiverr. Open Fiverr in Chrome and activate the extension.",
+          },
+        });
+      }
+
       ws.send(
         JSON.stringify({
           type: "ack",
-          status: "success",
-          message: "Send message command sent to browser extension",
+          status: forwardedToBrowser ? "success" : "error",
+          message: forwardedToBrowser
+            ? "Send message command sent to browser extension"
+            : "Browser extension is not connected; message was queued",
         }),
       );
     } else if (msgType === "fetch_client_details") {
