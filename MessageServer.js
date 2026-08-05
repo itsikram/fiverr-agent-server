@@ -61,6 +61,8 @@ export class MessageServer extends EventEmitter {
     this.wss = null;
     this.running = false;
 
+    this.heartbeatIntervalId = null;
+
     // Client management
     this.connectedClients = new Map(); // session_id -> WebSocket
     this.clientSessions = new Map(); // WebSocket -> session_id
@@ -2629,6 +2631,88 @@ export class MessageServer extends EventEmitter {
   }
 
   /**
+   * Broadcast current seller online status to Expo clients.
+   */
+  broadcastSellerOnlineStatus() {
+    this.broadcastToExpoClients({
+      type: "seller_profiles",
+      data: this.getSellerProfilesWithOnline(),
+    });
+
+    if (this.sellerProfile) {
+      const online = this.getOnlineUsernames();
+      this.broadcastToExpoClients({
+        type: "seller_profile",
+        data: {
+          ...this.sellerProfile,
+          online: online.has(this.sellerProfile.username),
+        },
+      });
+    }
+  }
+
+  /**
+   * Remove a WebSocket from tracking maps only if it is still the active
+   * socket for that session. Prevents a stale reconnect race where an old
+   * socket's close handler deletes a newer connection that reused the same
+   * session_id (common with Chrome MV3 service worker restarts).
+   */
+  cleanupWebSocketSession(ws, { broadcastOnline = true } = {}) {
+    if (!ws) {
+      return;
+    }
+
+    const sessionId = ws._sessionId;
+    const wasBrowserOnline =
+      !!sessionId && this.browserProfileBySession.get(sessionId) != null;
+
+    this.clientSessions.delete(ws);
+
+    if (sessionId && this.connectedClients.get(sessionId) === ws) {
+      this.connectedClients.delete(sessionId);
+      this.clientTypes.delete(sessionId);
+      if (this.browserProfileBySession.has(sessionId)) {
+        this.browserProfileBySession.delete(sessionId);
+      }
+      this.pushTokens.delete(sessionId);
+
+      if (broadcastOnline && wasBrowserOnline) {
+        this.broadcastSellerOnlineStatus();
+      }
+
+      console.log(
+        `[DEBUG] MessageServer: Cleaned up connection for session: ${sessionId}`,
+      );
+    } else if (sessionId) {
+      console.log(
+        `[DEBUG] MessageServer: Ignoring stale close for superseded session: ${sessionId}`,
+      );
+    }
+  }
+
+  /**
+   * Replace an existing session socket with a newer one.
+   * Caller must register `newWs` in connectedClients BEFORE closing the old socket.
+   */
+  supersedeSessionSocket(existingWs, newWs) {
+    if (!existingWs || existingWs === newWs) {
+      return;
+    }
+
+    console.log(
+      `[DEBUG] MessageServer: Superseding existing session socket: ${existingWs._sessionId || "unknown"}`,
+    );
+    existingWs._superseded = true;
+    this.clientSessions.delete(existingWs);
+
+    try {
+      existingWs.close(4000, "Replaced by new connection");
+    } catch (_) {
+      // Ignore close errors on dead sockets
+    }
+  }
+
+  /**
    * Handle WebSocket connection
    */
   handleWebSocketConnection(ws, req) {
@@ -2637,9 +2721,16 @@ export class MessageServer extends EventEmitter {
     // Store session info on websocket object
     ws._sessionId = null;
     ws._clientType = "browser";
+    ws._isAlive = true;
+    ws._superseded = false;
+
+    ws.on("pong", () => {
+      ws._isAlive = true;
+    });
 
     // Set up message handler
     ws.on("message", async (message) => {
+      ws._isAlive = true;
       try {
         const data = JSON.parse(message.toString());
         console.log(
@@ -2666,46 +2757,9 @@ export class MessageServer extends EventEmitter {
     ws.on("close", () => {
       const sessionId = ws._sessionId;
       console.log(
-        `[DEBUG] MessageServer: WebSocket client disconnected: ${sessionId}`,
+        `[DEBUG] MessageServer: WebSocket client disconnected: ${sessionId}${ws._superseded ? " (superseded)" : ""}`,
       );
-
-      // Clean up connection
-      const needBroadcastOnline =
-        sessionId && this.browserProfileBySession.has(sessionId);
-
-      if (sessionId) {
-        this.connectedClients.delete(sessionId);
-        this.clientTypes.delete(sessionId);
-        if (this.browserProfileBySession.has(sessionId)) {
-          this.browserProfileBySession.delete(sessionId);
-        }
-      }
-
-      if (ws && this.clientSessions.has(ws)) {
-        this.clientSessions.delete(ws);
-      }
-
-      if (needBroadcastOnline) {
-        this.broadcastToExpoClients({
-          type: "seller_profiles",
-          data: this.getSellerProfilesWithOnline(),
-        });
-
-        if (this.sellerProfile) {
-          const online = this.getOnlineUsernames();
-          this.broadcastToExpoClients({
-            type: "seller_profile",
-            data: {
-              ...this.sellerProfile,
-              online: online.has(this.sellerProfile.username),
-            },
-          });
-        }
-      }
-
-      console.log(
-        `[DEBUG] MessageServer: Cleaned up connection for session: ${sessionId}`,
-      );
+      this.cleanupWebSocketSession(ws, { broadcastOnline: !ws._superseded });
     });
 
     ws.on("error", (error) => {
@@ -2751,10 +2805,15 @@ export class MessageServer extends EventEmitter {
       // Store on websocket object
       ws._sessionId = newSessionId;
       ws._clientType = clientType;
+      ws._isAlive = true;
 
+      // Register the new socket first, then close any prior socket for this
+      // session. This prevents the old close handler from wiping the new entry.
+      const existingWs = this.connectedClients.get(newSessionId);
       this.connectedClients.set(newSessionId, ws);
       this.clientSessions.set(ws, newSessionId);
       this.clientTypes.set(newSessionId, clientType);
+      this.supersedeSessionSocket(existingWs, ws);
 
       console.log(
         `[DEBUG] MessageServer: WebSocket client connected: ${newSessionId} (type: ${clientType})`,
@@ -4036,12 +4095,14 @@ export class MessageServer extends EventEmitter {
 
     // Clean up disconnected clients
     for (const sessionId of disconnected) {
-      this.connectedClients.delete(sessionId);
-      this.clientTypes.delete(sessionId);
-      this.pushTokens.delete(sessionId); // Also remove push token
       const ws = this.connectedClients.get(sessionId);
-      if (ws && this.clientSessions.has(ws)) {
-        this.clientSessions.delete(ws);
+      if (ws) {
+        this.cleanupWebSocketSession(ws, { broadcastOnline: false });
+      } else {
+        this.connectedClients.delete(sessionId);
+        this.clientTypes.delete(sessionId);
+        this.pushTokens.delete(sessionId);
+        this.browserProfileBySession.delete(sessionId);
       }
     }
   }
@@ -4073,11 +4134,13 @@ export class MessageServer extends EventEmitter {
 
     // Clean up disconnected clients
     for (const sessionId of disconnected) {
-      this.connectedClients.delete(sessionId);
-      this.clientTypes.delete(sessionId);
       const ws = this.connectedClients.get(sessionId);
-      if (ws && this.clientSessions.has(ws)) {
-        this.clientSessions.delete(ws);
+      if (ws) {
+        this.cleanupWebSocketSession(ws);
+      } else {
+        this.connectedClients.delete(sessionId);
+        this.clientTypes.delete(sessionId);
+        this.browserProfileBySession.delete(sessionId);
       }
     }
   }
@@ -4467,6 +4530,43 @@ export class MessageServer extends EventEmitter {
       });
     });
 
+    // Detect zombie sockets left behind when Chrome MV3 service workers die
+    // without a clean WebSocket close (common after long idle).
+    if (this.heartbeatIntervalId) {
+      clearInterval(this.heartbeatIntervalId);
+    }
+    this.heartbeatIntervalId = setInterval(() => {
+      if (!this.wss) {
+        return;
+      }
+      this.wss.clients.forEach((ws) => {
+        if (ws._superseded) {
+          return;
+        }
+        if (ws._isAlive === false) {
+          console.log(
+            `[DEBUG] MessageServer: Terminating unresponsive WebSocket session: ${ws._sessionId || "unknown"}`,
+          );
+          try {
+            ws.terminate();
+          } catch (_) {
+            // Ignore
+          }
+          return;
+        }
+        ws._isAlive = false;
+        try {
+          ws.ping();
+        } catch (_) {
+          try {
+            ws.terminate();
+          } catch (__) {
+            // Ignore
+          }
+        }
+      });
+    }, 30000);
+
     // Start listening
     this.httpServer.listen(this.port, "0.0.0.0", () => {
       console.log(
@@ -4516,6 +4616,11 @@ export class MessageServer extends EventEmitter {
     }
 
     this.running = false;
+
+    if (this.heartbeatIntervalId) {
+      clearInterval(this.heartbeatIntervalId);
+      this.heartbeatIntervalId = null;
+    }
 
     // Close all WebSocket connections
     for (const ws of this.connectedClients.values()) {
