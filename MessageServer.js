@@ -76,6 +76,7 @@ export class MessageServer extends EventEmitter {
     this.pendingClientListTrigger = false;
     this.pendingSendMessage = null;
     this.pendingClickCommands = [];
+    this.autoReplyConfig = null;
     this.scheduledExtractionTimeouts = [];
     this.latestExtractionTarget = null;
     this.extractionGeneration = 0;
@@ -3356,6 +3357,48 @@ export class MessageServer extends EventEmitter {
         );
       }
       return;
+    } else if (msgType === "auto_reply_settings") {
+      const settings = data.data || {};
+      const command = {
+        type: "set_auto_reply_config",
+        config: {
+          enabled: settings.enabled === true,
+          delayMinutes: Number(settings.delayMinutes) || 30,
+          apiKey: String(settings.apiKey || ""),
+          model: String(settings.model || "gemini-3.5-flash"),
+          userProfile: settings.userProfile || null,
+        },
+      };
+      this.autoReplyConfig = command.config;
+
+      // Settings are intentionally relayed only to browser extensions and are
+      // not persisted or logged by the server.
+      let forwarded = 0;
+      for (const [sessionId, browserWs] of this.connectedClients.entries()) {
+        if (this.clientTypes.get(sessionId) !== "browser") continue;
+        try {
+          browserWs.send(
+            JSON.stringify({ type: "commands", commands: [command] }),
+          );
+          forwarded += 1;
+        } catch (error) {
+          console.log(
+            `[WARNING] MessageServer: Could not sync auto-reply settings to browser: ${error.message}`,
+          );
+        }
+      }
+
+      ws.send(
+        JSON.stringify({
+          type: "ack",
+          status: forwarded > 0 ? "success" : "warning",
+          message:
+            forwarded > 0
+              ? "Auto-reply settings synced to extension"
+              : "No browser extension connected for auto-reply settings",
+        }),
+      );
+      return;
     } else if (msgType === "send_message") {
       const messageText = data.message;
       const conversationId = data.conversationId;
@@ -3404,6 +3447,7 @@ export class MessageServer extends EventEmitter {
         message: messageText.trim(),
         conversationId: conversationId || username || null,
         username: username || conversationId || null,
+        autoReply: data.autoReply === true,
       };
 
       // Forward to browser extension clients
@@ -3448,7 +3492,7 @@ export class MessageServer extends EventEmitter {
         console.log(
           `[WARNING] MessageServer: No browser extension clients connected to forward send_message`,
         );
-        this.pendingSendMessage = messageText.trim();
+        this.pendingSendMessage = command;
       }
 
       ws.send(
@@ -3988,6 +4032,16 @@ export class MessageServer extends EventEmitter {
   async sendPendingCommands(sessionId, ws) {
     const commands = [];
 
+    if (
+      this.clientTypes.get(sessionId) === "browser" &&
+      this.autoReplyConfig
+    ) {
+      commands.push({
+        type: "set_auto_reply_config",
+        config: this.autoReplyConfig,
+      });
+    }
+
     if (this.pendingTrigger) {
       commands.push({
         type: "trigger",
@@ -4013,11 +4067,22 @@ export class MessageServer extends EventEmitter {
     }
 
     if (this.pendingSendMessage) {
-      commands.push({
-        type: "send_message",
-        message: this.pendingSendMessage,
-      });
+      const pending = this.pendingSendMessage;
       this.pendingSendMessage = null;
+      const pendingCommand =
+        typeof pending === "string"
+          ? { type: "send_message", message: pending }
+          : { ...pending, type: "send_message" };
+
+      // Replaying without a recipient would deliver to whichever conversation
+      // happens to be open in the browser, so drop it instead.
+      if (pendingCommand.conversationId || pendingCommand.username) {
+        commands.push(pendingCommand);
+      } else {
+        console.log(
+          `[WARNING] MessageServer: Dropped queued send_message with no target conversation`,
+        );
+      }
     }
 
     if (this.pendingClickCommands.length > 0) {
@@ -4796,7 +4861,7 @@ export class MessageServer extends EventEmitter {
   /**
    * Send message to client
    */
-  sendMessageToClient(messageText) {
+  sendMessageToClient(messageText, conversationId = null) {
     console.log(
       `[DEBUG] MessageServer: send_message_to_client() called with message: ${messageText.substring(0, 50)}...`,
     );
@@ -4805,9 +4870,18 @@ export class MessageServer extends EventEmitter {
       return false;
     }
 
+    if (!conversationId) {
+      console.log(
+        `[ERROR] MessageServer: send_message_to_client() requires a conversationId`,
+      );
+      return false;
+    }
+
     const command = {
       type: "send_message",
       message: messageText,
+      conversationId,
+      username: conversationId,
     };
 
     if (this.connectedClients.size > 0) {
@@ -4816,7 +4890,7 @@ export class MessageServer extends EventEmitter {
         `[DEBUG] MessageServer: Send message command sent via WebSocket`,
       );
     } else {
-      this.pendingSendMessage = messageText;
+      this.pendingSendMessage = command;
       console.log(
         `[DEBUG] MessageServer: No clients connected, message queued`,
       );
