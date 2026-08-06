@@ -89,8 +89,13 @@ export class MessageServer extends EventEmitter {
     this.storedNewMessages = [];
     this.storedClientActivations = [];
 
-    // Push notification tokens (session_id -> pushToken)
-    this.pushTokens = new Map(); // session_id -> pushToken
+    // Push notification tokens (pushToken -> metadata). Kept after WebSocket
+    // disconnect so native apps still receive alerts when closed.
+    this.pushTokens = new Map(); // pushToken -> { token, userId, sessionId, registeredAt }
+    this.sessionPushTokens = new Map(); // sessionId -> pushToken
+
+    // Dedupe new-client alerts (username -> last notified timestamp)
+    this.recentNewClientAlerts = new Map();
 
     // Seller profiles (persisted in MongoDB)
     this.sellerProfiles = new Map(); // username -> profile
@@ -2453,7 +2458,7 @@ export class MessageServer extends EventEmitter {
     } = messageData;
 
     // Get all registered push tokens
-    const pushTokens = Array.from(this.pushTokens.values());
+    const pushTokens = this.getRegisteredPushTokens();
 
     if (pushTokens.length === 0) {
       console.log(
@@ -2535,6 +2540,23 @@ export class MessageServer extends EventEmitter {
    */
   onNewClientDetected(data) {
     const { clientUsername, clientName, clientData, url, timestamp } = data;
+    const usernameKey = String(clientUsername || clientData?.username || "")
+      .trim()
+      .toLowerCase();
+    if (!usernameKey) {
+      return;
+    }
+
+    const lastAlertAt = this.recentNewClientAlerts.get(usernameKey) || 0;
+    const NEW_CLIENT_ALERT_COOLDOWN_MS = 60 * 60 * 1000;
+    if (Date.now() - lastAlertAt < NEW_CLIENT_ALERT_COOLDOWN_MS) {
+      console.log(
+        `[DEBUG] MessageServer: Skipping duplicate new client alert for ${usernameKey}`,
+      );
+      return;
+    }
+    this.recentNewClientAlerts.set(usernameKey, Date.now());
+
     console.log(
       `[DEBUG] MessageServer: onNewClientDetected() called with username: ${clientUsername}`,
     );
@@ -2586,6 +2608,10 @@ export class MessageServer extends EventEmitter {
     );
   }
 
+  getRegisteredPushTokens() {
+    return Array.from(this.pushTokens.keys());
+  }
+
   /**
    * Send push notification for new client
    * This works even when the app is completely closed
@@ -2593,8 +2619,7 @@ export class MessageServer extends EventEmitter {
   async sendPushNotificationForNewClient(clientInfo) {
     const { username, name } = clientInfo;
 
-    // Get all registered push tokens
-    const pushTokens = Array.from(this.pushTokens.values());
+    const pushTokens = this.getRegisteredPushTokens();
 
     if (pushTokens.length === 0) {
       console.log(
@@ -2680,7 +2705,7 @@ export class MessageServer extends EventEmitter {
       if (this.browserProfileBySession.has(sessionId)) {
         this.browserProfileBySession.delete(sessionId);
       }
-      this.pushTokens.delete(sessionId);
+      this.sessionPushTokens.delete(sessionId);
 
       if (broadcastOnline && wasBrowserOnline) {
         this.broadcastSellerOnlineStatus();
@@ -3833,12 +3858,18 @@ export class MessageServer extends EventEmitter {
         }),
       );
     } else if (msgType === "register_push_token") {
-      // Handle push token registration from Expo client
       const pushToken = data.pushToken || data.push_token;
       if (pushToken && sessionId) {
-        this.pushTokens.set(sessionId, pushToken);
+        const userId = ws._user?.id || ws._user?._id || null;
+        this.pushTokens.set(pushToken, {
+          token: pushToken,
+          sessionId,
+          userId,
+          registeredAt: Date.now(),
+        });
+        this.sessionPushTokens.set(sessionId, pushToken);
         console.log(
-          `[DEBUG] MessageServer: Registered push token for session ${sessionId}`,
+          `[DEBUG] MessageServer: Registered push token for session ${sessionId} (${this.pushTokens.size} device token(s) total)`,
         );
 
         ws.send(
@@ -4007,7 +4038,12 @@ export class MessageServer extends EventEmitter {
       }
 
       for (const newMsg of snapshotNewMessages) {
-        ws.send(JSON.stringify({ type: "new_message_detected", data: newMsg }));
+        ws.send(
+          JSON.stringify({
+            type: "new_message_detected",
+            data: { ...newMsg, historical: true },
+          }),
+        );
       }
 
       for (const username of snapshotActivations) {
@@ -4298,7 +4334,7 @@ export class MessageServer extends EventEmitter {
       } else {
         this.connectedClients.delete(sessionId);
         this.clientTypes.delete(sessionId);
-        this.pushTokens.delete(sessionId);
+        this.sessionPushTokens.delete(sessionId);
         this.browserProfileBySession.delete(sessionId);
       }
     }
