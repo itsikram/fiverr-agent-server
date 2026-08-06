@@ -77,6 +77,7 @@ export class MessageServer extends EventEmitter {
     this.pendingSendMessage = null;
     this.pendingClickCommands = [];
     this.autoReplyConfig = null;
+    this.tabReloadConfig = null;
     this.scheduledExtractionTimeouts = [];
     this.latestExtractionTarget = null;
     this.extractionGeneration = 0;
@@ -2561,6 +2562,12 @@ export class MessageServer extends EventEmitter {
     // Emit event
     this.emit("new_client_detected", newClientInfo);
 
+    this.saveClientDataToMongo(newClientInfo).catch((err) => {
+      console.log(
+        `[WARNING] MessageServer: Error saving new client to MongoDB: ${err.message}`,
+      );
+    });
+
     // Broadcast to Expo clients via WebSocket (if app is running)
     this.broadcastToExpoClients({
       type: "new_client_detected",
@@ -2568,13 +2575,11 @@ export class MessageServer extends EventEmitter {
     });
 
     // Send push notifications to all registered tokens (works even when app is closed)
-    /*
     this.sendPushNotificationForNewClient(newClientInfo).catch((error) => {
       console.error(
         `[ERROR] MessageServer: Error sending push notification for new client: ${error.message}`,
       );
     });
-    */
 
     console.log(
       `[DEBUG] MessageServer: New client detection signal emitted and notification sent`,
@@ -3444,6 +3449,43 @@ export class MessageServer extends EventEmitter {
         }),
       );
       return;
+    } else if (msgType === "tab_reload_settings") {
+      const settings = data.data || {};
+      const command = {
+        type: "set_tab_reload_config",
+        config: {
+          global: settings.global || {},
+          profiles: settings.profiles || {},
+        },
+      };
+      this.tabReloadConfig = command.config;
+
+      let forwarded = 0;
+      for (const [sessionId, browserWs] of this.connectedClients.entries()) {
+        if (this.clientTypes.get(sessionId) !== "browser") continue;
+        try {
+          browserWs.send(
+            JSON.stringify({ type: "commands", commands: [command] }),
+          );
+          forwarded += 1;
+        } catch (error) {
+          console.log(
+            `[WARNING] MessageServer: Could not sync tab reload settings to browser: ${error.message}`,
+          );
+        }
+      }
+
+      ws.send(
+        JSON.stringify({
+          type: "ack",
+          status: forwarded > 0 ? "success" : "warning",
+          message:
+            forwarded > 0
+              ? "Tab reload settings synced to extension"
+              : "No browser extension connected for tab reload settings",
+        }),
+      );
+      return;
     } else if (msgType === "send_message") {
       const messageText = data.message;
       const conversationId = data.conversationId;
@@ -4107,6 +4149,12 @@ export class MessageServer extends EventEmitter {
         commands.push({
           type: "set_auto_reply_config",
           config: this.autoReplyConfig,
+        });
+      }
+      if (this.tabReloadConfig) {
+        commands.push({
+          type: "set_tab_reload_config",
+          config: this.tabReloadConfig,
         });
       }
     }
