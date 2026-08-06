@@ -78,6 +78,7 @@ export class MessageServer extends EventEmitter {
     this.pendingClickCommands = [];
     this.autoReplyConfig = null;
     this.tabReloadConfig = null;
+    this.expoAppActivity = null;
     this.scheduledExtractionTimeouts = [];
     this.latestExtractionTarget = null;
     this.extractionGeneration = 0;
@@ -3511,6 +3512,36 @@ export class MessageServer extends EventEmitter {
         }),
       );
       return;
+    } else if (msgType === "expo_app_activity") {
+      const activity = data.data || {};
+      this.expoAppActivity = {
+        active: activity.active === true,
+        selectedProfileUsername: String(activity.selectedProfileUsername || "")
+          .trim()
+          .toLowerCase(),
+        at: Number(activity.at) || Date.now(),
+      };
+
+      const command = {
+        type: "set_expo_app_activity",
+        active: this.expoAppActivity.active,
+        selectedProfileUsername: this.expoAppActivity.selectedProfileUsername,
+        at: this.expoAppActivity.at,
+      };
+
+      for (const [sessionId, browserWs] of this.connectedClients.entries()) {
+        if (this.clientTypes.get(sessionId) !== "browser") continue;
+        try {
+          browserWs.send(
+            JSON.stringify({ type: "commands", commands: [command] }),
+          );
+        } catch (error) {
+          console.log(
+            `[WARNING] MessageServer: Could not sync Expo app activity to browser: ${error.message}`,
+          );
+        }
+      }
+      return;
     } else if (msgType === "send_message") {
       const messageText = data.message;
       const conversationId = data.conversationId;
@@ -4191,6 +4222,15 @@ export class MessageServer extends EventEmitter {
         commands.push({
           type: "set_tab_reload_config",
           config: this.tabReloadConfig,
+        });
+      }
+      if (this.expoAppActivity) {
+        commands.push({
+          type: "set_expo_app_activity",
+          active: this.expoAppActivity.active === true,
+          selectedProfileUsername:
+            this.expoAppActivity.selectedProfileUsername || "",
+          at: Number(this.expoAppActivity.at) || Date.now(),
         });
       }
     }
