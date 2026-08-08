@@ -3984,11 +3984,24 @@ export class MessageServer extends EventEmitter {
       }
       return;
     } else if (msgType === "send_message") {
-      const messageText = data.message;
+      const rawMessageText =
+        data.message ?? data.text ?? data.body ?? data.content ?? "";
+      const messageText =
+        typeof rawMessageText === "string"
+          ? rawMessageText.trim()
+          : String(rawMessageText || "").trim();
       const conversationId = data.conversationId;
       const username =
       data.username || data.clientUsername || data.client || null;
       const targetKey = conversationId || username || null;
+
+      console.log("[MessageServer] received send_message", {
+        sessionId: ws._sessionId || null,
+        conversationId: conversationId || username || null,
+        username: username || null,
+        messageLength: messageText.length,
+        messagePreview: messageText.slice(0, 240),
+      });
 
       if (!targetKey) {
         console.warn("[MessageServer] send_message missing conversationId/username", {
@@ -4036,11 +4049,20 @@ export class MessageServer extends EventEmitter {
 
       const command = {
         type: "send_message",
-        message: messageText.trim(),
+        message: messageText,
+        text: messageText,
+        body: messageText,
         conversationId: conversationId || username || null,
         username: username || conversationId || null,
         autoReply: data.autoReply === true
       };
+
+      console.log("[MessageServer] forwarding send_message to extension", {
+        conversationId: command.conversationId,
+        username: command.username,
+        messageLength: command.message.length,
+        messagePreview: command.message.slice(0, 240),
+      });
 
       // Forward to browser extension clients
       const browserClients = Array.from(this.connectedClients.entries()).filter(
