@@ -33,7 +33,7 @@ class PushNotificationService {
     try {
       // Validate token
       if (!this.isExpoPushToken(pushToken)) {
-        console.warn('[PushNotification] Invalid push token:', pushToken);
+
         return { success: false, error: 'Invalid push token' };
       }
 
@@ -45,10 +45,10 @@ class PushNotificationService {
         body: body || 'You have a new message',
         data: {
           ...data,
-          type: data.type || 'new_message',
+          type: data.type || 'new_message'
         },
         priority: 'high',
-        channelId: 'messages',
+        channelId: 'messages'
       };
 
       // Send notification
@@ -60,7 +60,7 @@ class PushNotificationService {
           const ticketChunk = await this.expo.sendPushNotificationsAsync(chunk);
           tickets.push(...ticketChunk);
         } catch (error) {
-          console.error('[PushNotification] Error sending chunk:', error);
+
           return { success: false, error: error.message };
         }
       }
@@ -68,18 +68,18 @@ class PushNotificationService {
       // Check ticket errors
       for (const ticket of tickets) {
         if (ticket.status === 'error') {
-          console.error('[PushNotification] Ticket error:', ticket.message);
-          if (ticket.details && ticket.details.error) {
-            console.error('[PushNotification] Error details:', ticket.details.error);
-          }
+
+
+
+
           return { success: false, error: ticket.message || 'Unknown error' };
         }
       }
 
-      console.log('[PushNotification] Notification sent successfully');
+
       return { success: true, tickets };
     } catch (error) {
-      console.error('[PushNotification] Error sending push notification:', error);
+
       return { success: false, error: error.message };
     }
   }
@@ -93,25 +93,25 @@ class PushNotificationService {
   async sendPushNotifications(pushTokens, { title, body, data = {} }) {
     try {
       // Filter valid tokens
-      const validTokens = pushTokens.filter(token => this.isExpoPushToken(token));
-      
+      const validTokens = pushTokens.filter((token) => this.isExpoPushToken(token));
+
       if (validTokens.length === 0) {
-        console.warn('[PushNotification] No valid push tokens provided');
+
         return { success: false, error: 'No valid push tokens' };
       }
 
       // Create messages
-      const messages = validTokens.map(token => ({
+      const messages = validTokens.map((token) => ({
         to: token,
         sound: 'default',
         title: title || 'New Message',
         body: body || 'You have a new message',
         data: {
           ...data,
-          type: data.type || 'new_message',
+          type: data.type || 'new_message'
         },
         priority: 'high',
-        channelId: 'messages',
+        channelId: 'messages'
       }));
 
       // Send notifications in chunks
@@ -123,7 +123,7 @@ class PushNotificationService {
           const ticketChunk = await this.expo.sendPushNotificationsAsync(chunk);
           tickets.push(...ticketChunk);
         } catch (error) {
-          console.error('[PushNotification] Error sending chunk:', error);
+
           return { success: false, error: error.message };
         }
       }
@@ -133,7 +133,7 @@ class PushNotificationService {
       for (const ticket of tickets) {
         if (ticket.status === 'error') {
           errors.push(ticket.message || 'Unknown error');
-          console.error('[PushNotification] Ticket error:', ticket.message);
+
         }
       }
 
@@ -141,10 +141,10 @@ class PushNotificationService {
         return { success: false, error: errors.join(', ') };
       }
 
-      console.log(`[PushNotification] Sent ${validTokens.length} notification(s) successfully`);
+
       return { success: true, tickets, sentCount: validTokens.length };
     } catch (error) {
-      console.error('[PushNotification] Error sending push notifications:', error);
+
       return { success: false, error: error.message };
     }
   }
