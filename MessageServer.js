@@ -2400,6 +2400,45 @@ export class MessageServer extends EventEmitter {
   }
 
   /**
+   * Rebuild in-memory client list from Mongo so Expo can paint immediately
+   * after a server restart without waiting for a full inbox scrape.
+   */
+  async ensureClientListHydratedFromMongo() {
+    if (
+    this.storedClientList &&
+    Array.isArray(this.storedClientList.clients) &&
+    this.storedClientList.clients.length > 0)
+    {
+      return this.storedClientList;
+    }
+
+    try {
+      const coll = await this.getMongoClientsCollection();
+      if (!coll) {
+        return this.storedClientList;
+      }
+
+      const clients = await coll.
+      find({ _id: { $ne: "client_list" } }).
+      sort({ updated_at: -1 }).
+      toArray();
+
+      if (!Array.isArray(clients) || clients.length === 0) {
+        return this.storedClientList;
+      }
+
+      this.storedClientList = {
+        clients,
+        timestamp: new Date().toISOString(),
+        source: "mongo_hydrate"
+      };
+      return this.storedClientList;
+    } catch (_error) {
+      return this.storedClientList;
+    }
+  }
+
+  /**
    * Get online usernames (browser sessions)
    */
   getOnlineUsernames() {
@@ -3451,6 +3490,8 @@ export class MessageServer extends EventEmitter {
 
 
 
+      await this.ensureClientListHydratedFromMongo();
+
       if (this.storedClientList) {
         const filteredClientList = await this.filterClientListForUser(
           currentUser,
@@ -3460,6 +3501,16 @@ export class MessageServer extends EventEmitter {
           JSON.stringify({
             type: "client_list_data",
             data: filteredClientList
+          })
+        );
+      } else {
+        this.pendingClientListTrigger = true;
+        this.triggerClientListExtraction();
+        ws.send(
+          JSON.stringify({
+            type: "ack",
+            status: "pending",
+            message: "Client list pending extension extract"
           })
         );
       }
@@ -3593,10 +3644,12 @@ export class MessageServer extends EventEmitter {
 
           }
         }
-      } else {
-
-
-
+      } else if (action === "extract_client_list") {
+        this.pendingClientListTrigger = true;
+      } else if (action === "extract_messages") {
+        this.pendingTrigger = true;
+      } else if (action === "extract_client_data") {
+        this.pendingClientTrigger = true;
       }
 
       ws.send(
@@ -4235,45 +4288,21 @@ export class MessageServer extends EventEmitter {
    * Send stored data to Expo client
    */
   async sendStoredDataToExpo(ws) {
-
-
     // Snapshot data
     const currentUser = ws._user || null;
     const canShowAll =
     currentUser &&
     this.normalizeRole(currentUser.role, currentUser) === "admin";
-    const snapshotMessagesFromMemory =
-    this.storedMessageDataByConversation.size > 0 ?
-    Array.from(this.storedMessageDataByConversation.values()).map((payload) =>
-    JSON.parse(JSON.stringify(payload))
-    ) :
-    this.storedMessageData && canShowAll ?
-    [JSON.parse(JSON.stringify(this.storedMessageData))] :
-    [];
-    const persistedMessagePayloads = await this.loadMessagesFromMongo();
-    let messagePayloads = this.mergeMessagePayloadSources(
-      persistedMessagePayloads,
-      snapshotMessagesFromMemory
-    );
 
-    // For non-admin users, restrict and transform messages: only send assigned clients' messages
+    // Hydrate + send the client list BEFORE the heavy Mongo message scan so the
+    // web app can render the sidebar in one RTT after connect.
+    await this.ensureClientListHydratedFromMongo();
+
     let assignedIds = [];
     if (!canShowAll) {
       assignedIds = await this.getAssignedClientIds(currentUser);
-
-
-
-
-
-      const beforeCount = messagePayloads.length;
-      messagePayloads = await this.filterMessagePayloadsForUser(
-        currentUser,
-        messagePayloads
-      );
-
-
-
     }
+
     let snapshotClientList = null;
     if (this.storedClientList) {
       snapshotClientList = await this.filterClientListForUser(
@@ -4281,6 +4310,7 @@ export class MessageServer extends EventEmitter {
         JSON.parse(JSON.stringify(this.storedClientList))
       );
     }
+
     const snapshotClientData = new Map();
     if (canShowAll) {
       for (const [key, value] of this.storedClientData.entries()) {
@@ -4293,16 +4323,7 @@ export class MessageServer extends EventEmitter {
         }
       }
     }
-    let snapshotNewMessages = this.storedNewMessages.slice(-10);
-    let snapshotActivations = this.storedClientActivations.slice(-10);
-    if (!canShowAll) {
-      snapshotNewMessages = snapshotNewMessages.filter((newMsg) =>
-      this.payloadMatchesAssignedIds(newMsg, assignedIds)
-      );
-      snapshotActivations = snapshotActivations.filter((username) =>
-      this.payloadMatchesAssignedIds({ username }, assignedIds)
-      );
-    }
+
     const snapshotSellerProfile = this.sellerProfile ?
     JSON.parse(JSON.stringify(this.sellerProfile)) :
     null;
@@ -4314,18 +4335,7 @@ export class MessageServer extends EventEmitter {
       })
     );
 
-    // Send data
     try {
-      for (const messagePayload of messagePayloads) {
-        ws.send(JSON.stringify({ type: "message_data", data: messagePayload }));
-      }
-
-
-
-
-
-
-
       if (snapshotClientList) {
         ws.send(
           JSON.stringify({
@@ -4333,13 +4343,66 @@ export class MessageServer extends EventEmitter {
             data: snapshotClientList
           })
         );
+      }
 
+      if (snapshotSellerProfile) {
+        const currentWithOnline = {
+          ...snapshotSellerProfile,
+          online: online.has(snapshotSellerProfile.username)
+        };
+        ws.send(
+          JSON.stringify({ type: "seller_profile", data: currentWithOnline })
+        );
+      }
 
-
+      if (snapshotSellerProfiles.length > 0) {
+        ws.send(
+          JSON.stringify({
+            type: "seller_profiles",
+            data: snapshotSellerProfiles
+          })
+        );
       }
 
       for (const [, clientData] of snapshotClientData.entries()) {
         ws.send(JSON.stringify({ type: "client_data", data: clientData }));
+      }
+
+      // Messages are slower; send after clients so the UI is already usable.
+      const snapshotMessagesFromMemory =
+      this.storedMessageDataByConversation.size > 0 ?
+      Array.from(this.storedMessageDataByConversation.values()).map((payload) =>
+      JSON.parse(JSON.stringify(payload))
+      ) :
+      this.storedMessageData && canShowAll ?
+      [JSON.parse(JSON.stringify(this.storedMessageData))] :
+      [];
+      const persistedMessagePayloads = await this.loadMessagesFromMongo();
+      let messagePayloads = this.mergeMessagePayloadSources(
+        persistedMessagePayloads,
+        snapshotMessagesFromMemory
+      );
+
+      if (!canShowAll) {
+        messagePayloads = await this.filterMessagePayloadsForUser(
+          currentUser,
+          messagePayloads
+        );
+      }
+
+      for (const messagePayload of messagePayloads) {
+        ws.send(JSON.stringify({ type: "message_data", data: messagePayload }));
+      }
+
+      let snapshotNewMessages = this.storedNewMessages.slice(-10);
+      let snapshotActivations = this.storedClientActivations.slice(-10);
+      if (!canShowAll) {
+        snapshotNewMessages = snapshotNewMessages.filter((newMsg) =>
+        this.payloadMatchesAssignedIds(newMsg, assignedIds)
+        );
+        snapshotActivations = snapshotActivations.filter((username) =>
+        this.payloadMatchesAssignedIds({ username }, assignedIds)
+        );
       }
 
       for (const newMsg of snapshotNewMessages) {
@@ -4357,32 +4420,6 @@ export class MessageServer extends EventEmitter {
         );
       }
 
-      if (snapshotSellerProfile) {
-        const currentWithOnline = {
-          ...snapshotSellerProfile,
-          online: online.has(snapshotSellerProfile.username)
-        };
-        ws.send(
-          JSON.stringify({ type: "seller_profile", data: currentWithOnline })
-        );
-
-
-
-      }
-
-      if (snapshotSellerProfiles.length > 0) {
-        ws.send(
-          JSON.stringify({
-            type: "seller_profiles",
-            data: snapshotSellerProfiles
-          })
-        );
-
-
-
-      }
-
-      // Notify sync complete
       ws.send(
         JSON.stringify({
           type: "sync_complete",
@@ -4390,9 +4427,6 @@ export class MessageServer extends EventEmitter {
           message: "All stored data sent"
         })
       );
-
-
-
     } catch (error) {
 
 
