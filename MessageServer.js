@@ -2233,14 +2233,16 @@ export class MessageServer extends EventEmitter {
 
         const cleanMsgId =
         message.id && !String(message.id).startsWith("message-") ?
-        message.id :
+        String(message.id) :
         `msg_${index}`;
 
+        // Keep Fiverr's native id on `id` so the app can dedupe against live
+        // extracts. Use a conversation-scoped key only for Mongo `_id`.
         const messageId = `${safeConversationId}_${cleanMsgId}_${timestampValue}`;
         const payload = {
           ...message,
           _id: messageId,
-          id: messageId,
+          id: cleanMsgId,
           clientId: safeConversationId,
           conversationId: safeConversationId,
           sender:
