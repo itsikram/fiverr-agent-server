@@ -97,9 +97,15 @@ export class MessageServer extends EventEmitter {
     // disconnect so native apps still receive alerts when closed.
     this.pushTokens = new Map(); // pushToken -> { token, userId, sessionId, registeredAt }
     this.sessionPushTokens = new Map(); // sessionId -> pushToken
+    // Web Push subscriptions for Expo web / PWA (endpoint -> metadata)
+    this.webPushSubscriptions = new Map();
+    this.mongoPushSubscriptionsCollection = null;
+    this.webPushHydrated = false;
 
     // Dedupe new-client alerts (username -> last notified timestamp)
     this.recentNewClientAlerts = new Map();
+    // Dedupe unread/message push alerts (key -> last notified timestamp)
+    this.recentMessagePushAlerts = new Map();
 
     // Seller profiles (persisted in MongoDB)
     this.sellerProfiles = new Map(); // username -> profile
@@ -2740,21 +2746,152 @@ export class MessageServer extends EventEmitter {
       data: data
     });
 
-    // Send push notifications to all registered tokens (works even when app is closed)
-    /*
+    // Push to native + web PWA even when the app/tab is closed.
     this.sendPushNotificationForMessage(data).catch(() => {});
-    */
 
 
 
 
   }
 
+  getMessagePushDedupeKey(messageData = {}) {
+    const conversationId =
+      messageData.conversationId ||
+      messageData.clientUsername ||
+      messageData.username ||
+      "unknown";
+    const text = String(
+      messageData.messageText || messageData.lastMessage || ""
+    )
+      .trim()
+      .slice(0, 80);
+    return `${String(conversationId).toLowerCase()}::${text}`;
+  }
+
+  shouldSendMessagePush(messageData = {}) {
+    if (messageData.historical === true) return false;
+    if (messageData.isFromMe === true || messageData.fromMe === true) {
+      return false;
+    }
+
+    const key = this.getMessagePushDedupeKey(messageData);
+    const lastAt = this.recentMessagePushAlerts.get(key) || 0;
+    const COOLDOWN_MS = 20 * 1000;
+    if (Date.now() - lastAt < COOLDOWN_MS) {
+      return false;
+    }
+    this.recentMessagePushAlerts.set(key, Date.now());
+
+    if (this.recentMessagePushAlerts.size > 500) {
+      const oldest = this.recentMessagePushAlerts.keys().next().value;
+      this.recentMessagePushAlerts.delete(oldest);
+    }
+    return true;
+  }
+
+  async getMongoPushSubscriptionsCollection() {
+    if (!this.mongodbUrl) return null;
+    if (this.mongoPushSubscriptionsCollection) {
+      return this.mongoPushSubscriptionsCollection;
+    }
+    try {
+      await this.connectMongo();
+      if (!this.mongoDb) return null;
+      this.mongoPushSubscriptionsCollection = this.mongoDb.collection(
+        "push_subscriptions"
+      );
+      try {
+        await this.mongoPushSubscriptionsCollection.createIndex(
+          { endpoint: 1 },
+          { unique: true }
+        );
+      } catch (_) {}
+      return this.mongoPushSubscriptionsCollection;
+    } catch (error) {
+      this.mongoPushSubscriptionsCollection = null;
+      return null;
+    }
+  }
+
+  async hydrateWebPushSubscriptions() {
+    if (this.webPushHydrated) return;
+    this.webPushHydrated = true;
+    try {
+      const coll = await this.getMongoPushSubscriptionsCollection();
+      if (!coll) return;
+      const rows = await coll.find({ type: "web" }).limit(2000).toArray();
+      for (const row of rows) {
+        if (!row?.endpoint || !row?.subscription) continue;
+        this.webPushSubscriptions.set(row.endpoint, {
+          type: "web",
+          endpoint: row.endpoint,
+          subscription: row.subscription,
+          userId: row.userId || null,
+          sessionId: row.sessionId || null,
+          registeredAt: row.registeredAt || Date.now()
+        });
+      }
+    } catch (_) {}
+  }
+
+  async persistWebPushSubscription(record) {
+    if (!record?.endpoint || !record?.subscription) return;
+    this.webPushSubscriptions.set(record.endpoint, record);
+    try {
+      const coll = await this.getMongoPushSubscriptionsCollection();
+      if (!coll) return;
+      await coll.updateOne(
+        { endpoint: record.endpoint },
+        {
+          $set: {
+            type: "web",
+            endpoint: record.endpoint,
+            subscription: record.subscription,
+            userId: record.userId || null,
+            sessionId: record.sessionId || null,
+            registeredAt: record.registeredAt || Date.now(),
+            updatedAt: new Date()
+          }
+        },
+        { upsert: true }
+      );
+    } catch (_) {}
+  }
+
+  async removeWebPushSubscription(endpoint) {
+    if (!endpoint) return;
+    this.webPushSubscriptions.delete(endpoint);
+    try {
+      const coll = await this.getMongoPushSubscriptionsCollection();
+      if (!coll) return;
+      await coll.deleteOne({ endpoint });
+    } catch (_) {}
+  }
+
+  async getAllPushTargets() {
+    await this.hydrateWebPushSubscriptions();
+    const targets = [];
+
+    for (const token of this.pushTokens.keys()) {
+      targets.push({ type: "expo", token });
+    }
+    for (const record of this.webPushSubscriptions.values()) {
+      if (record?.subscription) {
+        targets.push({ type: "web", subscription: record.subscription });
+      }
+    }
+    return targets;
+  }
+
   /**
-   * Send push notification for new message
-   * This works even when the app is completely closed
+   * Send push notification for new / unread message.
+   * Works for native Expo tokens and web PWA subscriptions even when closed.
    */
   async sendPushNotificationForMessage(messageData) {
+    if (!this.shouldSendMessagePush(messageData)) {
+      return;
+    }
+
     const {
       clientName,
       messageText,
@@ -2764,57 +2901,40 @@ export class MessageServer extends EventEmitter {
       isTest
     } = messageData;
 
-    // Get all registered push tokens
-    const pushTokens = this.getRegisteredPushTokens();
-
-    if (pushTokens.length === 0) {
-
-
-
+    const targets = await this.getAllPushTargets();
+    if (targets.length === 0) {
       return;
     }
 
-    const title = isTest ?
-    "🧪 Test Notification" :
-    `New message from ${clientName || "Client"}`;
-    const body = isTest ?
-    `📱 ${messageText || "This is a test notification!"}` :
-    messageText || "You have a new message";
+    const title = isTest
+      ? "Test Notification"
+      : `New message from ${clientName || "Client"}`;
+    const body = isTest
+      ? messageText || "This is a test notification!"
+      : messageText || "You have a new unread message";
 
-    // Truncate body if too long
     const maxLength = 100;
     const truncatedBody =
-    body.length > maxLength ? body.substring(0, maxLength - 3) + "..." : body;
+      body.length > maxLength ? body.substring(0, maxLength - 3) + "..." : body;
 
-
-
-
-
-    const result = await pushNotificationService.sendPushNotifications(
-      pushTokens,
-      {
-        title,
-        body: truncatedBody,
-        data: {
-          type: "new_message",
-          conversationId: conversationId || null,
-          username: clientUsername || username || null,
-          clientName: clientName || null,
-          messageText: messageText || null,
-          isTest: isTest || false
-        }
+    const result = await pushNotificationService.sendToTargets(targets, {
+      title,
+      body: truncatedBody,
+      data: {
+        type: "new_message",
+        conversationId: conversationId || null,
+        username: clientUsername || username || null,
+        clientName: clientName || null,
+        messageText: messageText || null,
+        isTest: isTest || false
       }
-    );
+    });
 
-
-
-
-
-
-
-
-
-
+    if (Array.isArray(result?.goneEndpoints)) {
+      for (const endpoint of result.goneEndpoints) {
+        await this.removeWebPushSubscription(endpoint);
+      }
+    }
   }
 
   /**
@@ -2926,46 +3046,31 @@ export class MessageServer extends EventEmitter {
   async sendPushNotificationForNewClient(clientInfo) {
     const { username, name } = clientInfo;
 
-    const pushTokens = this.getRegisteredPushTokens();
-
-    if (pushTokens.length === 0) {
-
-
-
+    const targets = await this.getAllPushTargets();
+    if (targets.length === 0) {
       return;
     }
 
-    const title = `🎉 New Client: ${name || username}`;
+    const title = `New Client: ${name || username}`;
     const body = `You have a new client message from ${name || username}!`;
 
-
-
-
-
-    const result = await pushNotificationService.sendPushNotifications(
-      pushTokens,
-      {
-        title,
-        body,
-        data: {
-          type: "new_client",
-          username: username,
-          clientName: name || username,
-          conversationId: username,
-          isNewClient: true
-        }
+    const result = await pushNotificationService.sendToTargets(targets, {
+      title,
+      body,
+      data: {
+        type: "new_client",
+        username: username,
+        clientName: name || username,
+        conversationId: username,
+        isNewClient: true
       }
-    );
+    });
 
-
-
-
-
-
-
-
-
-
+    if (Array.isArray(result?.goneEndpoints)) {
+      for (const endpoint of result.goneEndpoints) {
+        await this.removeWebPushSubscription(endpoint);
+      }
+    }
   }
 
   /**
@@ -4247,36 +4352,69 @@ export class MessageServer extends EventEmitter {
           })
         );
       }
+    } else if (msgType === "register_web_push") {
+      const subscription = data.subscription || data.pushSubscription;
+      const endpoint = subscription?.endpoint;
+      if (endpoint && subscription?.keys?.p256dh && subscription?.keys?.auth) {
+        const userId = ws._user?.id || ws._user?._id || null;
+        await this.persistWebPushSubscription({
+          type: "web",
+          endpoint,
+          subscription: {
+            endpoint: subscription.endpoint,
+            expirationTime: subscription.expirationTime || null,
+            keys: {
+              p256dh: subscription.keys.p256dh,
+              auth: subscription.keys.auth
+            }
+          },
+          userId,
+          sessionId,
+          registeredAt: Date.now()
+        });
+
+        ws.send(
+          JSON.stringify({
+            type: "ack",
+            status: "success",
+            message: "Web push subscription registered"
+          })
+        );
+      } else {
+        ws.send(
+          JSON.stringify({
+            type: "ack",
+            status: "error",
+            message: "Invalid web push subscription"
+          })
+        );
+      }
     } else if (msgType === "test_notification") {
       // Handle test notification from browser extension
-
-
-
-
       const testData = data.data || data;
+      const testPayload = {
+        clientName: testData.clientName || "Test Client",
+        messageText: testData.messageText || "This is a test notification!",
+        conversationId: testData.conversationId || "test_" + Date.now(),
+        username: testData.username || "testuser",
+        clientUsername: testData.username || "testuser",
+        isTest: true
+      };
 
       // Broadcast test notification to Expo clients
       this.broadcastToExpoClients({
         type: "new_message_detected",
-        data: {
-          clientName: testData.clientName || "Test Client",
-          messageText: testData.messageText || "This is a test notification!",
-          conversationId: testData.conversationId || "test_" + Date.now(),
-          username: testData.username || "testuser",
-          clientUsername: testData.username || "testuser",
-          isTest: true
-        }
+        data: testPayload
       });
 
-
-
-
+      // Also deliver remote push (native + web PWA)
+      this.sendPushNotificationForMessage(testPayload).catch(() => {});
 
       ws.send(
         JSON.stringify({
           type: "ack",
           status: "success",
-          message: "Test notification sent to Android app"
+          message: "Test notification sent"
         })
       );
     } else {
@@ -4763,6 +4901,30 @@ export class MessageServer extends EventEmitter {
       if (req.method === "OPTIONS") {
         res.writeHead(200);
         res.end();
+        return;
+      }
+
+      if (pathname === "/push/vapid-public-key" && req.method === "GET") {
+        const publicKey = pushNotificationService.getVapidPublicKey();
+        if (!publicKey) {
+          const body = JSON.stringify({
+            error:
+              "VAPID keys are not configured. Set VAPID_PUBLIC_KEY and VAPID_PRIVATE_KEY."
+          });
+          res.writeHead(503, {
+            "Content-Type": "application/json",
+            "Content-Length": Buffer.byteLength(body)
+          });
+          res.end(body);
+          return;
+        }
+        const body = JSON.stringify({ publicKey });
+        res.writeHead(200, {
+          "Content-Type": "application/json",
+          "Content-Length": Buffer.byteLength(body),
+          "Cache-Control": "no-store"
+        });
+        res.end(body);
         return;
       }
 
