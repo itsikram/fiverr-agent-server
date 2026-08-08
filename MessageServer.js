@@ -2024,6 +2024,39 @@ export class MessageServer extends EventEmitter {
     }
   }
 
+  messageLooksFromMe(message) {
+    if (!message) return false;
+    if (message.isFromMe === true || message.isFromMe === "true") {
+      return true;
+    }
+    const sender = String(
+      message.senderUsername || message.sender || ""
+    ).
+    trim().
+    toLowerCase();
+    return sender === "me";
+  }
+
+  canonicalMessageId(message) {
+    const raw = message?.id || message?._id || message?.messageId;
+    if (!raw || /^message-\d+$/i.test(String(raw))) {
+      return null;
+    }
+    let id = String(raw).trim();
+    id = id.replace(
+      /_[A-Z][a-z]{2}\s+\d{1,2},\s+\d{1,2}:\d{2}\s*(?:AM|PM)$/i,
+      ""
+    );
+    id = id.replace(/_\d{4}-\d{2}-\d{2}T[\d:.+-]+Z?$/i, "");
+    const fiverrCore = id.match(
+      /([a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9-]{4,}-[a-f0-9]{12}_[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9-]{4,}-[a-f0-9]{12})/i
+    );
+    if (fiverrCore) {
+      return fiverrCore[1].toLowerCase();
+    }
+    return id.toLowerCase();
+  }
+
   async loadMessagesFromMongo() {
     const coll = await this.getMongoMessagesCollection();
     if (!coll) {
@@ -2060,8 +2093,23 @@ export class MessageServer extends EventEmitter {
 
       const grouped = new Map();
       for (const doc of docs) {
+        const fromMe = this.messageLooksFromMe(doc);
+        const senderValue = doc.senderUsername || doc.sender;
+        const buyerSender =
+        !fromMe &&
+        !isGeneric(senderValue) &&
+        String(senderValue).trim().toLowerCase() !== "me" &&
+        String(senderValue).trim().toLowerCase() !== "client" ?
+        senderValue :
+        null;
+
+        // Prefer the buyer/peer identity so seller ("me") rows that were
+        // historically keyed under the seller username still land in the
+        // client conversation for the first paint before extract.
         const conversationId =
-        (!isGeneric(doc.conversationId) ? doc.conversationId : null) || (
+        (!isGeneric(doc.clientUsername) ? doc.clientUsername : null) ||
+        buyerSender || (
+        !isGeneric(doc.conversationId) ? doc.conversationId : null) || (
         !isGeneric(doc.clientId) ? doc.clientId : null);
 
         if (!conversationId) {
@@ -2081,8 +2129,10 @@ export class MessageServer extends EventEmitter {
           ...doc,
           text: doc.text || doc.content || doc.message || "",
           time: doc.timestamp || doc.time || doc.date,
-          sender: doc.sender || (doc.isFromMe ? "me" : conversationId),
-          isFromMe: Boolean(doc.isFromMe)
+          sender: fromMe ? "me" : doc.sender || buyerSender || conversationId,
+          isFromMe: fromMe,
+          clientUsername: doc.clientUsername || conversationId,
+          conversationId
         });
       }
 
@@ -2196,32 +2246,33 @@ export class MessageServer extends EventEmitter {
 
       };
 
+      const peerConversationId =
+      (!isGeneric(conversationId) ? conversationId : null) || (
+      !isGeneric(clientId) ? clientId : null) || (
+      !isGeneric(clientKeyForId) ? clientKeyForId : null);
+
       for (const [index, message] of messages.entries()) {
+        const fromMe = this.messageLooksFromMe(message);
         const msgSender = message.senderUsername || message.sender;
         const isValidSpecificSender =
         msgSender &&
         !isGeneric(msgSender) &&
-        msgSender !== "me" &&
-        msgSender !== "client";
+        String(msgSender).trim().toLowerCase() !== "me" &&
+        String(msgSender).trim().toLowerCase() !== "client";
 
-        // Verification: If message is from client (isFromMe is false), the sender username IS the true client ID
+        // Buyer rows can refine the peer id. Seller/outgoing rows must stay on
+        // the client conversation — never under the seller account username.
         const perMsgSenderId =
-        !message.isFromMe && isValidSpecificSender ? msgSender : null;
+        !fromMe && isValidSpecificSender ? msgSender : null;
 
         const safeConversationId =
-        (!isGeneric(perMsgSenderId) ? perMsgSenderId : null) || (
-        !isGeneric(conversationId) ? conversationId : null) || (
-        !isGeneric(clientId) ? clientId : null) || (
-        !isGeneric(clientKeyForId) ? clientKeyForId : null) || (
+        (!isGeneric(perMsgSenderId) ? perMsgSenderId : null) ||
+        peerConversationId || (
         !isGeneric(this.getClientLookupKey(message)) ?
         this.getClientLookupKey(message) :
         null);
 
         if (!safeConversationId) {
-
-
-
-
           continue;
         }
 
@@ -2237,23 +2288,25 @@ export class MessageServer extends EventEmitter {
         `msg_${index}`;
 
         // Keep Fiverr's native id on `id` so the app can dedupe against live
-        // extracts. Use a conversation-scoped key only for Mongo `_id`.
-        const messageId = `${safeConversationId}_${cleanMsgId}_${timestampValue}`;
+        // extracts. Use a stable conversation-scoped key for Mongo `_id`.
+        const messageId = `${safeConversationId}_${cleanMsgId}`;
         const payload = {
           ...message,
           _id: messageId,
           id: cleanMsgId,
           clientId: safeConversationId,
+          clientUsername:
+          message.clientUsername ||
+          safeConversationId,
           conversationId: safeConversationId,
-          sender:
+          sender: fromMe ?
+          "me" :
           message.sender && message.sender !== "client" ?
           message.sender :
-          message.isFromMe ?
-          "me" :
           safeConversationId,
           text: message.text || message.content || message.message || "",
           timestamp: timestampValue,
-          isFromMe: Boolean(message.isFromMe),
+          isFromMe: fromMe,
           metadata: message.metadata || {},
           created_at:
           message.created_at || message.createdAt || new Date().toISOString(),
@@ -2377,15 +2430,42 @@ export class MessageServer extends EventEmitter {
 
     for (const message of combined) {
       if (!message) continue;
-      const id = message.id || message._id;
-      const text = String(message.text || message.content || message.message || "").
+      const fromMe = this.messageLooksFromMe(message);
+      const normalized = {
+        ...message,
+        isFromMe: fromMe,
+        sender: fromMe ? "me" : message.sender,
+        clientUsername:
+        message.clientUsername ||
+        base.clientUsername ||
+        base.conversationId ||
+        this.getMessageConversationKey(base) ||
+        null
+      };
+      const canonicalId = this.canonicalMessageId(normalized);
+      const text = String(
+        normalized.text || normalized.content || normalized.message || ""
+      ).
       trim().
       toLowerCase();
-      const signature = id ?
-      `id:${id}` :
-      `text:${text}|${message.isFromMe ? "me" : "client"}|${message.timestamp || message.time || ""}`;
-      // Later payloads (extension extracts) win over persisted Mongo duplicates.
-      bySignature.set(signature, message);
+      const signature = canonicalId ?
+      `id:${canonicalId}` :
+      `text:${text}|${fromMe ? "me" : "client"}|${normalized.timestamp || normalized.time || ""}`;
+      const existing = bySignature.get(signature);
+      if (!existing) {
+        bySignature.set(signature, normalized);
+        continue;
+      }
+      // Prefer seller/outgoing ownership and richer attachment payloads.
+      const existingFromMe = this.messageLooksFromMe(existing);
+      const preferIncoming =
+      fromMe && !existingFromMe ||
+      (Array.isArray(normalized.images) ? normalized.images.length : 0) >
+      (Array.isArray(existing.images) ? existing.images.length : 0);
+      bySignature.set(
+        signature,
+        preferIncoming ? { ...existing, ...normalized, isFromMe: fromMe || existingFromMe } : { ...normalized, ...existing, isFromMe: fromMe || existingFromMe }
+      );
     }
 
     base.messages = Array.from(bySignature.values());
@@ -2439,14 +2519,43 @@ export class MessageServer extends EventEmitter {
     }
 
     const normalizedData = JSON.parse(JSON.stringify(data));
+    const peerKey =
+    this.getMessageConversationKey(normalizedData) ||
+    normalizedData.clientUsername ||
+    null;
+    if (peerKey) {
+      normalizedData.conversationId = peerKey;
+      normalizedData.username = normalizedData.username || peerKey;
+      normalizedData.clientUsername =
+      normalizedData.clientUsername || peerKey;
+      normalizedData.messages = (normalizedData.messages || []).map((message) => {
+        const fromMe = this.messageLooksFromMe(message);
+        return {
+          ...message,
+          isFromMe: fromMe,
+          sender: fromMe ? "me" : message.sender,
+          conversationId: peerKey,
+          clientUsername: message.clientUsername || peerKey
+        };
+      });
+    }
     this.storedMessageData = normalizedData;
-    const storageKey = this.getMessageConversationKey(normalizedData);
+    const storageKeyRaw = this.getMessageConversationKey(normalizedData);
+    const storageKey =
+    this.normalizeClientLookupValue(storageKeyRaw) || storageKeyRaw;
     if (storageKey) {
-      const existing = this.storedMessageDataByConversation.get(storageKey);
+      const existing =
+      this.storedMessageDataByConversation.get(storageKey) || (
+      storageKeyRaw && storageKeyRaw !== storageKey ?
+      this.storedMessageDataByConversation.get(storageKeyRaw) :
+      null);
       const merged = existing ?
       this.mergeTwoMessagePayloads(existing, normalizedData) :
       normalizedData;
       this.storedMessageDataByConversation.set(storageKey, merged);
+      if (storageKeyRaw && storageKeyRaw !== storageKey) {
+        this.storedMessageDataByConversation.delete(storageKeyRaw);
+      }
       this.storedMessageData = merged;
       this.emit("message_received", merged);
       this.broadcastToExpoClients({
