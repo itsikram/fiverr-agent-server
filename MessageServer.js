@@ -828,8 +828,15 @@ export class MessageServer extends EventEmitter {
       return clientListPayload;
     }
 
-    const clientCount = Array.isArray(clientListPayload.clients)
-      ? clientListPayload.clients.length
+    const sanitizedPayload = {
+      ...clientListPayload,
+      clients: this.sanitizeClientListClients(
+        clientListPayload.clients || [],
+      ),
+    };
+
+    const clientCount = Array.isArray(sanitizedPayload.clients)
+      ? sanitizedPayload.clients.length
       : 0;
     console.log(
       `[DEBUG] MessageServer: filterClientListForUser user=`,
@@ -841,7 +848,7 @@ export class MessageServer extends EventEmitter {
     );
 
     if (isAdmin) {
-      return clientListPayload;
+      return sanitizedPayload;
     }
 
     const assignedIds = await this.getAssignedClientIds(user);
@@ -861,7 +868,7 @@ export class MessageServer extends EventEmitter {
       };
     }
 
-    const filteredClients = (clientListPayload.clients || []).filter((client) =>
+    const filteredClients = (sanitizedPayload.clients || []).filter((client) =>
       this.clientMatchesAssignedIds(client, assignedIds),
     );
 
@@ -870,7 +877,7 @@ export class MessageServer extends EventEmitter {
     );
 
     return {
-      ...clientListPayload,
+      ...sanitizedPayload,
       clients: filteredClients,
     };
   }
@@ -973,6 +980,80 @@ export class MessageServer extends EventEmitter {
       },
       assignedIds,
     );
+  }
+
+  looksLikeFiverrSlug(value) {
+    const slug = String(value || "")
+      .trim()
+      .replace(/^@/, "");
+    if (!slug || slug.includes(" ")) {
+      return false;
+    }
+    return /^[a-zA-Z0-9_-]+$/.test(slug);
+  }
+
+  sanitizeClientListClients(clients) {
+    if (!Array.isArray(clients) || clients.length === 0) {
+      return [];
+    }
+
+    const slugUsage = new Map();
+    for (const client of clients) {
+      const slug = [client?.username, client?.conversationId, client?.conversation_id]
+        .map((value) => String(value || "").trim())
+        .find((value) => this.looksLikeFiverrSlug(value));
+      if (!slug) continue;
+      slugUsage.set(slug.toLowerCase(), (slugUsage.get(slug.toLowerCase()) || 0) + 1);
+    }
+
+    return clients.map((client, index) => {
+      const copy = { ...(client || {}) };
+      let slug = [copy.username, copy.conversationId, copy.conversation_id]
+        .map((value) => String(value || "").trim())
+        .find((value) => this.looksLikeFiverrSlug(value));
+
+      if (slug && (slugUsage.get(slug.toLowerCase()) || 0) > 1) {
+        const sameSlugRows = clients.filter((row) => {
+          const rowSlug = [row?.username, row?.conversationId, row?.conversation_id]
+            .map((value) => String(value || "").trim())
+            .find((value) => this.looksLikeFiverrSlug(value));
+          return rowSlug && rowSlug.toLowerCase() === slug.toLowerCase();
+        });
+        const uniqueNames = new Set(
+          sameSlugRows
+            .map((row) => String(row?.name || row?.displayName || "").trim())
+            .filter(Boolean),
+        );
+        if (uniqueNames.size > 1) {
+          slug = null;
+          if (
+            copy.conversationId &&
+            String(copy.conversationId).toLowerCase() ===
+              String(sameSlugRows[0]?.conversationId || "").toLowerCase()
+          ) {
+            copy.conversationId = null;
+            copy.conversation_id = null;
+          }
+        }
+      }
+
+      const nameKey = copy.name
+        ? `name:${String(copy.name).trim().toLowerCase()}`
+        : null;
+      const rowKey = slug || nameKey || `row:${index}`;
+      const username = slug || copy.username || copy.name || rowKey;
+
+      return {
+        ...copy,
+        _id: rowKey,
+        id: rowKey,
+        clientKey: rowKey,
+        username,
+        conversationId: slug || copy.conversationId || null,
+        name: copy.name || copy.displayName || username || "Unknown",
+        displayName: copy.displayName || copy.name || username || "Unknown",
+      };
+    });
   }
 
   buildClientDocument(data) {
@@ -2442,7 +2523,7 @@ export class MessageServer extends EventEmitter {
       ? normalizedData.clients
       : [];
 
-    normalizedData.clients = clients.map((client) => {
+    normalizedData.clients = this.sanitizeClientListClients(clients).map((client) => {
       const payload = this.buildClientDocument(client);
       return {
         ...payload,
