@@ -3207,6 +3207,12 @@ export class MessageServer extends EventEmitter {
     ws.on("message", async (message) => {
       ws._isAlive = true;
       try {
+        // Log raw incoming message for diagnostics (trim long payloads)
+        try {
+          const raw = String(message).slice(0, 2000);
+          console.log('[MessageServer] Raw WS message received', { session: ws._sessionId, clientType: ws._clientType, rawPreview: raw });
+        } catch (_) {}
+
         const data = JSON.parse(message.toString());
 
 
@@ -3248,6 +3254,11 @@ export class MessageServer extends EventEmitter {
   async handleMessage(data, ws) {
     const msgType = data.type;
     const sessionId = ws._sessionId;
+
+    // Log high-level message receipt
+    try {
+      console.log('[MessageServer] handleMessage', { type: msgType, sessionId, clientType: ws._clientType });
+    } catch (_) {}
 
 
 
@@ -3978,6 +3989,14 @@ export class MessageServer extends EventEmitter {
       const username =
       data.username || data.clientUsername || data.client || null;
       const targetKey = conversationId || username || null;
+
+      if (!targetKey) {
+        console.warn("[MessageServer] send_message missing conversationId/username", {
+          incoming: data,
+          sessionId: ws._sessionId || null,
+          user: ws._user || null,
+        });
+      }
 
       if (!messageText || !messageText.trim()) {
         ws.send(
