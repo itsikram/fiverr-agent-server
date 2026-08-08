@@ -84,7 +84,10 @@ export class MessageServer extends EventEmitter {
     this.extractionGeneration = 0;
 
     // Data storage for Expo Go clients
-    this.storedMessageData = null;
+    this.storedMessageData = null; // latest payload (legacy)
+    this.storedMessageDataByConversation = new Map(); // conversationId -> payload
+    this.scheduledExtractionByTarget = new Map(); // target -> timeout ids
+    this.extractionGenerationByTarget = new Map(); // target -> generation
     this.storedClientData = new Map(); // key -> data
     this.storedClientList = null;
     this.storedNewMessages = [];
@@ -2293,6 +2296,10 @@ export class MessageServer extends EventEmitter {
 
     const normalizedData = JSON.parse(JSON.stringify(data));
     this.storedMessageData = normalizedData;
+    const storageKey = this.getMessageConversationKey(normalizedData);
+    if (storageKey) {
+      this.storedMessageDataByConversation.set(storageKey, normalizedData);
+    }
 
     // Save to MongoDB
     this.saveMessagesToMongo(normalizedData).catch((err) => {
@@ -3198,47 +3205,53 @@ export class MessageServer extends EventEmitter {
       }
     } else if (msgType === "request_messages") {
       const target = data.conversationId || data.username || null;
-      if (this.storedMessageData) {
-        const currentUser = ws._user || null;
-        const isAdmin =
-          currentUser &&
-          this.normalizeRole(currentUser.role, currentUser) === "admin";
+      const currentUser = ws._user || null;
+      const isAdmin =
+        currentUser &&
+        this.normalizeRole(currentUser.role, currentUser) === "admin";
 
+      console.log(
+        `[DEBUG] MessageServer: request_messages from user=${
+          currentUser
+            ? currentUser.username || currentUser.email || currentUser._id
+            : "<none>"
+        } isAdmin=${isAdmin} target=${target || "<all>"}`,
+      );
+
+      const persisted = await this.loadMessagesFromMongo();
+      const inMemoryPayloads =
+        this.storedMessageDataByConversation.size > 0
+          ? Array.from(this.storedMessageDataByConversation.values())
+          : this.storedMessageData
+            ? [this.storedMessageData]
+            : [];
+      const payloads = persisted.length > 0 ? persisted : inMemoryPayloads;
+      const filteredPayloads = await this.filterMessagePayloadsForUser(
+        currentUser,
+        payloads,
+        target,
+      );
+
+      if (!isAdmin) {
         console.log(
-          `[DEBUG] MessageServer: request_messages from user=${
-            currentUser
-              ? currentUser.username || currentUser.email || currentUser._id
-              : "<none>"
-          } isAdmin=${isAdmin}`,
+          `[DEBUG] MessageServer: request_messages filtered payloads count=${
+            filteredPayloads.length
+          }`,
         );
+      }
 
-        // Load persisted payloads and send appropriate view depending on role
-        const persisted = await this.loadMessagesFromMongo();
-        const payloads =
-          persisted.length > 0 ? persisted : [this.storedMessageData];
-        const filteredPayloads = await this.filterMessagePayloadsForUser(
-          currentUser,
-          payloads,
-          target,
-        );
-
-        if (!isAdmin) {
-          console.log(
-            `[DEBUG] MessageServer: request_messages filtered payloads count=${
-              filteredPayloads.length
-            }`,
-          );
-        }
-
-        for (const pl of filteredPayloads || []) {
-          if (pl) {
-            ws.send(JSON.stringify({ type: "message_data", data: pl }));
-          }
+      for (const pl of filteredPayloads || []) {
+        if (pl) {
+          ws.send(JSON.stringify({ type: "message_data", data: pl }));
         }
       }
 
-      if (target && data.triggerExtraction === true) {
-        this.scheduleBrowserMessageExtraction(target, [4000, 10000, 20000]);
+      if (target) {
+        const delaysMs =
+          data.triggerExtraction === true
+            ? [500, 4000, 10000, 20000]
+            : [4000, 10000, 20000];
+        this.scheduleBrowserMessageExtraction(target, delaysMs);
       }
     } else if (msgType === "request_client_data") {
       const clientKey = data.username || data.conversationId;
@@ -3970,17 +3983,19 @@ export class MessageServer extends EventEmitter {
     const canShowAll =
       currentUser &&
       this.normalizeRole(currentUser.role, currentUser) === "admin";
-    const snapshotMessage =
-      this.storedMessageData && canShowAll
-        ? JSON.parse(JSON.stringify(this.storedMessageData))
-        : null;
+    const snapshotMessagesFromMemory =
+      this.storedMessageDataByConversation.size > 0
+        ? Array.from(this.storedMessageDataByConversation.values()).map((payload) =>
+            JSON.parse(JSON.stringify(payload)),
+          )
+        : this.storedMessageData && canShowAll
+          ? [JSON.parse(JSON.stringify(this.storedMessageData))]
+          : [];
     const persistedMessagePayloads = await this.loadMessagesFromMongo();
     let messagePayloads =
       persistedMessagePayloads.length > 0
         ? persistedMessagePayloads
-        : snapshotMessage
-          ? [snapshotMessage]
-          : [];
+        : snapshotMessagesFromMemory;
 
     // For non-admin users, restrict and transform messages: only send assigned clients' messages
     let assignedIds = [];
@@ -4143,18 +4158,18 @@ export class MessageServer extends EventEmitter {
       return;
     }
 
-    for (const timeoutId of this.scheduledExtractionTimeouts) {
+    const existingTimeouts = this.scheduledExtractionByTarget.get(normalized) || [];
+    for (const timeoutId of existingTimeouts) {
       clearTimeout(timeoutId);
     }
-    this.scheduledExtractionTimeouts = [];
+
+    const generation =
+      (this.extractionGenerationByTarget.get(normalized) || 0) + 1;
+    this.extractionGenerationByTarget.set(normalized, generation);
     this.latestExtractionTarget = normalized;
-    const generation = ++this.extractionGeneration;
 
     const sendExtract = () => {
-      if (
-        this.extractionGeneration !== generation ||
-        this.latestExtractionTarget !== normalized
-      ) {
+      if (this.extractionGenerationByTarget.get(normalized) !== generation) {
         console.log(
           `[DEBUG] MessageServer: Skipping stale scheduled extraction for ${normalized}`,
         );
@@ -4195,10 +4210,11 @@ export class MessageServer extends EventEmitter {
       }
     };
 
-    delaysMs.forEach((delay) => {
-      const timeoutId = setTimeout(sendExtract, delay);
-      this.scheduledExtractionTimeouts.push(timeoutId);
-    });
+    const timeoutIds = delaysMs.map((delay) => setTimeout(sendExtract, delay));
+    this.scheduledExtractionByTarget.set(normalized, timeoutIds);
+    this.scheduledExtractionTimeouts = Array.from(
+      this.scheduledExtractionByTarget.values(),
+    ).flat();
   }
 
   /**
