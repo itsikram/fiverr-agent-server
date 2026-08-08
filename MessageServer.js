@@ -3309,8 +3309,8 @@ export class MessageServer extends EventEmitter {
       if (target) {
         const delaysMs =
           data.triggerExtraction === true
-            ? [500, 2000, 5000, 12000, 25000]
-            : [2000, 5000, 12000];
+            ? [1500, 8000, 20000]
+            : [8000, 20000];
         this.scheduleBrowserMessageExtraction(target, delaysMs);
       }
     } else if (msgType === "request_client_data") {
