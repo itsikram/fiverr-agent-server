@@ -2277,6 +2277,63 @@ export class MessageServer extends EventEmitter {
   }
 
   /**
+   * Merge Mongo payloads with fresher in-memory extension extracts.
+   */
+  mergeTwoMessagePayloads(left, right) {
+    const base = { ...(left || {}), ...(right || {}) };
+    const combined = [
+      ...(Array.isArray(left?.messages) ? left.messages : []),
+      ...(Array.isArray(right?.messages) ? right.messages : []),
+    ];
+    const bySignature = new Map();
+
+    for (const message of combined) {
+      if (!message) continue;
+      const id = message.id || message._id;
+      const text = String(message.text || message.content || message.message || "")
+        .trim()
+        .toLowerCase();
+      const signature = id
+        ? `id:${id}`
+        : `text:${text}|${message.isFromMe ? "me" : "client"}|${message.timestamp || message.time || ""}`;
+      if (!bySignature.has(signature)) {
+        bySignature.set(signature, message);
+      }
+    }
+
+    base.messages = Array.from(bySignature.values());
+    base.conversationId =
+      right?.conversationId ||
+      left?.conversationId ||
+      this.getMessageConversationKey(base);
+    return base;
+  }
+
+  mergeMessagePayloadSources(persisted = [], inMemory = []) {
+    const byConversation = new Map();
+
+    for (const payload of [...(persisted || []), ...(inMemory || [])]) {
+      if (!payload) continue;
+      const key = this.normalizeClientLookupValue(
+        this.getMessageConversationKey(payload),
+      );
+      if (!key) continue;
+
+      const existing = byConversation.get(key);
+      if (!existing) {
+        byConversation.set(key, JSON.parse(JSON.stringify(payload)));
+        continue;
+      }
+      byConversation.set(
+        key,
+        this.mergeTwoMessagePayloads(existing, payload),
+      );
+    }
+
+    return Array.from(byConversation.values());
+  }
+
+  /**
    * Handle message received
    */
   onMessageReceived(data) {
@@ -3225,7 +3282,10 @@ export class MessageServer extends EventEmitter {
           : this.storedMessageData
             ? [this.storedMessageData]
             : [];
-      const payloads = persisted.length > 0 ? persisted : inMemoryPayloads;
+      const payloads = this.mergeMessagePayloadSources(
+        persisted,
+        inMemoryPayloads,
+      );
       const filteredPayloads = await this.filterMessagePayloadsForUser(
         currentUser,
         payloads,
@@ -3249,8 +3309,8 @@ export class MessageServer extends EventEmitter {
       if (target) {
         const delaysMs =
           data.triggerExtraction === true
-            ? [500, 4000, 10000, 20000]
-            : [4000, 10000, 20000];
+            ? [500, 2000, 5000, 12000, 25000]
+            : [2000, 5000, 12000];
         this.scheduleBrowserMessageExtraction(target, delaysMs);
       }
     } else if (msgType === "request_client_data") {
@@ -3992,10 +4052,10 @@ export class MessageServer extends EventEmitter {
           ? [JSON.parse(JSON.stringify(this.storedMessageData))]
           : [];
     const persistedMessagePayloads = await this.loadMessagesFromMongo();
-    let messagePayloads =
-      persistedMessagePayloads.length > 0
-        ? persistedMessagePayloads
-        : snapshotMessagesFromMemory;
+    let messagePayloads = this.mergeMessagePayloadSources(
+      persistedMessagePayloads,
+      snapshotMessagesFromMemory,
+    );
 
     // For non-admin users, restrict and transform messages: only send assigned clients' messages
     let assignedIds = [];
