@@ -728,30 +728,9 @@ export class MessageServer extends EventEmitter {
       if (!normalizedTarget) {
         return allPayloads;
       }
-      return allPayloads.filter((payload) => {
-        if (!payload) return false;
-        const candidateValues = [
-          payload?.conversationId,
-          payload?.conversation_id,
-          payload?.username,
-          payload?.clientUsername,
-          payload?.client,
-          payload?.clients?.[0]?.conversationId,
-          payload?.clients?.[0]?.conversation_id,
-          payload?.clients?.[0]?.username,
-          payload?.clients?.[0]?.clientUsername,
-          payload?.clients?.[0]?.client,
-          payload?.clients?.[0]?.id,
-          payload?.clients?.[0]?.clientId,
-        ].filter(Boolean);
-
-        return candidateValues.some((value) => {
-          const normalizedValue = this.normalizeClientLookupValue(value);
-          return Boolean(
-            normalizedValue && normalizedValue === normalizedTarget,
-          );
-        });
-      });
+      return allPayloads.filter((payload) =>
+        this.payloadMatchesConversationTarget(payload, normalizedTarget),
+      );
     }
 
     const assignedIds = await this.getAssignedClientIds(user);
@@ -775,29 +754,7 @@ export class MessageServer extends EventEmitter {
       }
 
       if (normalizedTarget) {
-        const candidateValues = [
-          payload?.conversationId,
-          payload?.conversation_id,
-          payload?.username,
-          payload?.clientUsername,
-          payload?.client,
-          payload?.clients?.[0]?.conversationId,
-          payload?.clients?.[0]?.conversation_id,
-          payload?.clients?.[0]?.username,
-          payload?.clients?.[0]?.clientUsername,
-          payload?.clients?.[0]?.client,
-          payload?.clients?.[0]?.id,
-          payload?.clients?.[0]?.clientId,
-        ].filter(Boolean);
-
-        const normalizedMatches = candidateValues.some((value) => {
-          const normalizedValue = this.normalizeClientLookupValue(value);
-          return Boolean(
-            normalizedValue && normalizedValue === normalizedTarget,
-          );
-        });
-
-        if (!normalizedMatches) {
+        if (!this.payloadMatchesConversationTarget(payload, normalizedTarget)) {
           continue;
         }
       }
@@ -989,7 +946,55 @@ export class MessageServer extends EventEmitter {
     if (!slug || slug.includes(" ")) {
       return false;
     }
+    if (/^name:/i.test(slug) || /^row:/i.test(slug)) {
+      return false;
+    }
+    if (/^client-\d+$/i.test(slug)) {
+      return false;
+    }
     return /^[a-zA-Z0-9_-]+$/.test(slug);
+  }
+
+  conversationLookupMatches(normalizedTarget, normalizedValue) {
+    if (!normalizedTarget || !normalizedValue) {
+      return false;
+    }
+    if (normalizedTarget === normalizedValue) {
+      return true;
+    }
+    return (
+      normalizedValue.includes(normalizedTarget) ||
+      normalizedTarget.includes(normalizedValue)
+    );
+  }
+
+  payloadMatchesConversationTarget(payload, normalizedTarget) {
+    if (!normalizedTarget) {
+      return true;
+    }
+    if (!payload) {
+      return false;
+    }
+
+    const candidateValues = [
+      payload?.conversationId,
+      payload?.conversation_id,
+      payload?.username,
+      payload?.clientUsername,
+      payload?.client,
+      payload?.clients?.[0]?.conversationId,
+      payload?.clients?.[0]?.conversation_id,
+      payload?.clients?.[0]?.username,
+      payload?.clients?.[0]?.clientUsername,
+      payload?.clients?.[0]?.client,
+      payload?.clients?.[0]?.id,
+      payload?.clients?.[0]?.clientId,
+    ].filter(Boolean);
+
+    return candidateValues.some((value) => {
+      const normalizedValue = this.normalizeClientLookupValue(value);
+      return this.conversationLookupMatches(normalizedTarget, normalizedValue);
+    });
   }
 
   sanitizeClientListClients(clients) {
@@ -3397,12 +3402,8 @@ export class MessageServer extends EventEmitter {
         }
       }
 
-      if (target) {
-        const delaysMs =
-          data.triggerExtraction === true
-            ? [5000, 12000, 25000]
-            : [8000, 20000];
-        this.scheduleBrowserMessageExtraction(target, delaysMs);
+      if (target && data.triggerExtraction === true) {
+        this.scheduleBrowserMessageExtraction(target, [5000, 12000, 25000]);
       }
     } else if (msgType === "request_client_data") {
       const clientKey = data.username || data.conversationId;
