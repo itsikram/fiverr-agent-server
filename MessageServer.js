@@ -2296,9 +2296,8 @@ export class MessageServer extends EventEmitter {
       const signature = id
         ? `id:${id}`
         : `text:${text}|${message.isFromMe ? "me" : "client"}|${message.timestamp || message.time || ""}`;
-      if (!bySignature.has(signature)) {
-        bySignature.set(signature, message);
-      }
+      // Later payloads (extension extracts) win over persisted Mongo duplicates.
+      bySignature.set(signature, message);
     }
 
     base.messages = Array.from(bySignature.values());
@@ -2355,23 +2354,34 @@ export class MessageServer extends EventEmitter {
     this.storedMessageData = normalizedData;
     const storageKey = this.getMessageConversationKey(normalizedData);
     if (storageKey) {
-      this.storedMessageDataByConversation.set(storageKey, normalizedData);
+      const existing = this.storedMessageDataByConversation.get(storageKey);
+      const merged = existing
+        ? this.mergeTwoMessagePayloads(existing, normalizedData)
+        : normalizedData;
+      this.storedMessageDataByConversation.set(storageKey, merged);
+      this.storedMessageData = merged;
+      this.emit("message_received", merged);
+      this.broadcastToExpoClients({
+        type: "message_data",
+        data: merged,
+      });
+    } else {
+      this.emit("message_received", data);
+      this.broadcastToExpoClients({
+        type: "message_data",
+        data: data,
+      });
     }
 
     // Save to MongoDB
-    this.saveMessagesToMongo(normalizedData).catch((err) => {
+    this.saveMessagesToMongo(
+      storageKey
+        ? this.storedMessageDataByConversation.get(storageKey)
+        : normalizedData,
+    ).catch((err) => {
       console.log(
         `[WARNING] MessageServer: Error saving messages to MongoDB: ${err.message}`,
       );
-    });
-
-    // Emit event
-    this.emit("message_received", data);
-
-    // Broadcast to Expo clients
-    this.broadcastToExpoClients({
-      type: "message_data",
-      data: data,
     });
 
     console.log(`[DEBUG] MessageServer: Signal emitted and data stored`);
@@ -3309,7 +3319,7 @@ export class MessageServer extends EventEmitter {
       if (target) {
         const delaysMs =
           data.triggerExtraction === true
-            ? [1500, 8000, 20000]
+            ? [5000, 12000, 25000]
             : [8000, 20000];
         this.scheduleBrowserMessageExtraction(target, delaysMs);
       }
