@@ -1781,6 +1781,66 @@ export class MessageServer extends EventEmitter {
     return this.sendJsonResponse(res, 200, { assignments });
   }
 
+  async handleUserActivities(req, res, token) {
+    if (!token) {
+      return this.sendJsonResponse(res, 401, { error: "Missing auth token" });
+    }
+
+    const user = await this.getUserByToken(token);
+    if (!user) {
+      return this.sendJsonResponse(res, 401, {
+        error: "Invalid or expired token",
+      });
+    }
+
+    if (req.method === "POST") {
+      const body = await this.parseJsonBody(req);
+      await this.logUserActivity(req, user, body || {});
+      return this.sendJsonResponse(res, 200, { success: true });
+    }
+
+    return this.sendJsonResponse(res, 405, { error: "Method not allowed" });
+  }
+
+  async handleAdminActivities(req, res, token) {
+    const user = await this.requireAdmin(req, res, token);
+    if (!user) {
+      return;
+    }
+
+    const coll = await this.getMongoActivitiesCollection();
+    if (!coll) {
+      return this.sendJsonResponse(res, 200, { activities: [] });
+    }
+
+    const url = new URL(req.url, `http://${req.headers.host}`);
+    const query = url.searchParams;
+    const userId = String(query.get("userId") || "").trim();
+    const activityType = String(query.get("activityType") || "")
+      .trim()
+      .toLowerCase();
+    const limitRaw = parseInt(String(query.get("limit") || "200"), 10);
+    const limit = Number.isFinite(limitRaw)
+      ? Math.max(1, Math.min(limitRaw, 1000))
+      : 200;
+
+    const filter = { role: { $ne: "admin" } };
+    if (userId) {
+      filter.userId = userId;
+    }
+    if (activityType) {
+      filter.activityType = activityType;
+    }
+
+    const activities = await coll
+      .find(filter)
+      .sort({ created_at: -1 })
+      .limit(limit)
+      .toArray();
+
+    return this.sendJsonResponse(res, 200, { activities });
+  }
+
   /**
    * Load seller profiles from MongoDB or JSON file
    */
@@ -3692,6 +3752,15 @@ export class MessageServer extends EventEmitter {
         }
       }
 
+      const targetIdentifier = conversationId || username || null;
+
+      // First, send an activate_inbox command to ensure the receiving client's inbox is active
+      const activateCommand = {
+        type: "activate_inbox",
+        conversationId: targetIdentifier,
+        username: targetIdentifier,
+      };
+
       const command = {
         type: "send_message",
         message: messageText,
@@ -3717,7 +3786,13 @@ export class MessageServer extends EventEmitter {
       let forwardedToBrowser = false;
 
       if (browserClients.length > 0) {
-        const message = JSON.stringify({
+        // Send activate_inbox command first, then send_message command
+        const activateMessage = JSON.stringify({
+          type: "commands",
+          commands: [activateCommand],
+        });
+
+        const sendMessage = JSON.stringify({
           type: "commands",
           commands: [command],
         });
@@ -3726,15 +3801,32 @@ export class MessageServer extends EventEmitter {
         // when multiple extension sockets are connected.
         const [, browserWs] = browserClients[0];
         try {
-          browserWs.send(message);
+          // Send activate command first
+          browserWs.send(activateMessage);
+          // Small delay to ensure inbox is activated before sending message
+          setTimeout(() => {
+            try {
+              browserWs.send(sendMessage);
+            } catch (sendError) {
+              console.error(
+                "[MessageServer] Error sending message after activation",
+                sendError,
+              );
+            }
+          }, 100);
           forwardedToBrowser = true;
         } catch (error) {
           // Fall back to other browser clients if the first one failed
           for (let i = 1; i < browserClients.length; i += 1) {
             try {
-              browserClients[i][1].send(message);
+              const fallbackWs = browserClients[i][1];
+              fallbackWs.send(activateMessage);
+              setTimeout(() => {
+                try {
+                  fallbackWs.send(sendMessage);
+                } catch (sendError) {}
+              }, 100);
               forwardedToBrowser = true;
-
               break;
             } catch (fallbackError) {}
           }
@@ -4754,6 +4846,42 @@ export class MessageServer extends EventEmitter {
               .replace(/^Bearer\s+/i, "")
               .trim();
             await this.handleAdminAssignments(req, res, token);
+          } catch (error) {
+            await this.sendJsonResponse(res, 500, {
+              error: "Internal server error",
+            });
+          }
+        })();
+        return;
+      }
+
+      if (pathname === "/activities") {
+        (async () => {
+          try {
+            const authHeader = req.headers["authorization"] || "";
+            const token = authHeader
+              .toString()
+              .replace(/^Bearer\s+/i, "")
+              .trim();
+            await this.handleUserActivities(req, res, token);
+          } catch (error) {
+            await this.sendJsonResponse(res, 500, {
+              error: "Internal server error",
+            });
+          }
+        })();
+        return;
+      }
+
+      if (pathname === "/admin/activities") {
+        (async () => {
+          try {
+            const authHeader = req.headers["authorization"] || "";
+            const token = authHeader
+              .toString()
+              .replace(/^Bearer\s+/i, "")
+              .trim();
+            await this.handleAdminActivities(req, res, token);
           } catch (error) {
             await this.sendJsonResponse(res, 500, {
               error: "Internal server error",
