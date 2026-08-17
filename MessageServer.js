@@ -1100,12 +1100,6 @@ export class MessageServer extends EventEmitter {
   }
 
   async hashPassword(password, salt = null) {
-
-
-          )
-        )
-
-
     const actualSalt = salt || crypto.randomBytes(16).toString("hex");
     const derivedKey = crypto.scryptSync(password, actualSalt, 64);
     return {
@@ -1787,22 +1781,8 @@ export class MessageServer extends EventEmitter {
     return this.sendJsonResponse(res, 200, { assignments });
   }
 
-  /
-      ),
-    )
-
-      ),
-    )
-
-        ,
-
-
-
-      **
-   * Load seller profiles from
-
-
-        MongoDB or JSON file
+  /**
+   * Load seller profiles from MongoDB or JSON file
    */
   parseSellerProfilesFromObject(data) {
     const profiles = new Map();
