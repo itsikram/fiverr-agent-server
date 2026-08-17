@@ -24,36 +24,36 @@ export class MessageServer extends EventEmitter {
     const isRender = process.env.RENDER === "true";
     const defaultPort = isRender ? 10000 : 8765;
     this.port =
-    port !== null ?
-    parseInt(port) :
-    parseInt(process.env.PORT || defaultPort);
+      port !== null
+        ? parseInt(port)
+        : parseInt(process.env.PORT || defaultPort);
 
     // MongoDB configuration
     this.mongodbUrl = this.normalizeMongoUrl(
       (
-      process.env.mongodb_url ||
-      process.env.MONGODB_URL ||
-      process.env.MONGODB_URI ||
-      "").
-      trim()
+        process.env.mongodb_url ||
+        process.env.MONGODB_URL ||
+        process.env.MONGODB_URI ||
+        ""
+      ).trim(),
     );
     const envDbName = (process.env.MONGODB_DB_NAME || "").trim();
     this.mongoDbName =
-    envDbName ||
-    this.parseMongoDbNameFromUrl(this.mongodbUrl) ||
-    "fiverr_agent";
+      envDbName ||
+      this.parseMongoDbNameFromUrl(this.mongodbUrl) ||
+      "fiverr_agent";
     this.mongoProfilesColl = (
-    process.env.MONGODB_PROFILES_COLLECTION || "seller_profiles").
-    trim();
+      process.env.MONGODB_PROFILES_COLLECTION || "seller_profiles"
+    ).trim();
     this.mongoClientsColl = (
-    process.env.MONGODB_CLIENTS_COLLECTION || "clients").
-    trim();
+      process.env.MONGODB_CLIENTS_COLLECTION || "clients"
+    ).trim();
     this.mongoMessagesColl = (
-    process.env.MONGODB_MESSAGES_COLLECTION || "messages").
-    trim();
+      process.env.MONGODB_MESSAGES_COLLECTION || "messages"
+    ).trim();
     this.mongoUsersColl = (
-    process.env.MONGODB_USERS_COLLECTION || "users").
-    trim();
+      process.env.MONGODB_USERS_COLLECTION || "users"
+    ).trim();
 
     // Server state
     this.server = null;
@@ -163,9 +163,9 @@ export class MessageServer extends EventEmitter {
 
     const hasTlsFlag = /(?:^|[?&])(tls|ssl)=/i.test(normalized);
     const isAtlasLike =
-    normalized.startsWith("mongodb+srv://") ||
-    /mongodb(?:\.net|\.com)/i.test(normalized) ||
-    /atlas/i.test(normalized);
+      normalized.startsWith("mongodb+srv://") ||
+      /mongodb(?:\.net|\.com)/i.test(normalized) ||
+      /atlas/i.test(normalized);
 
     if (isAtlasLike && !hasTlsFlag) {
       const separator = normalized.includes("?") ? "&" : "?";
@@ -177,8 +177,8 @@ export class MessageServer extends EventEmitter {
 
   async isSrvFallbackError(error) {
     return (
-      error?.code === "ECONNREFUSED" && /querySrv/i.test(error?.message || ""));
-
+      error?.code === "ECONNREFUSED" && /querySrv/i.test(error?.message || "")
+    );
   }
 
   async createFallbackUriFromSrv(uri) {
@@ -197,11 +197,11 @@ export class MessageServer extends EventEmitter {
       searchParams.set("authSource", "admin");
     }
 
-    const auth = url.username ?
-    `${encodeURIComponent(url.username)}${
-    url.password ? `:${encodeURIComponent(url.password)}` : ""}@` :
-
-    "";
+    const auth = url.username
+      ? `${encodeURIComponent(url.username)}${
+          url.password ? `:${encodeURIComponent(url.password)}` : ""
+        }@`
+      : "";
 
     const srvRecords = await new Promise((resolve, reject) => {
       resolver.resolveSrv(`_mongodb._tcp.${url.hostname}`, (err, records) => {
@@ -218,15 +218,15 @@ export class MessageServer extends EventEmitter {
     const searchString = searchParams.toString();
 
     return `mongodb://${auth}${hosts.join(",")}/${dbName}${
-    searchString ? `?${searchString}` : ""}`;
-
+      searchString ? `?${searchString}` : ""
+    }`;
   }
 
   getMongoClientOptions() {
     const isAtlasLike =
-    this.mongodbUrl.startsWith("mongodb+srv://") ||
-    /mongodb(?:\.net|\.com)/i.test(this.mongodbUrl) ||
-    /atlas/i.test(this.mongodbUrl);
+      this.mongodbUrl.startsWith("mongodb+srv://") ||
+      /mongodb(?:\.net|\.com)/i.test(this.mongodbUrl) ||
+      /atlas/i.test(this.mongodbUrl);
 
     return {
       serverSelectionTimeoutMS: 10000,
@@ -236,16 +236,13 @@ export class MessageServer extends EventEmitter {
       maxPoolSize: 5,
       appName: "fiverr-agent-server",
       dbName: this.mongoDbName,
-      tls: isAtlasLike
+      tls: isAtlasLike,
     };
   }
 
   async connectMongo() {
     if (!this.mongodbUrl) {
       if (!this.mongoConnectionWarningShown) {
-
-
-
         this.mongoConnectionWarningShown = true;
       }
       return null;
@@ -267,54 +264,33 @@ export class MessageServer extends EventEmitter {
 
     const mongoOptions = this.getMongoClientOptions();
     this.mongoConnectionPromise = (async () => {
-
-
-
       await mongoose.connect(this.mongodbUrl, mongoOptions);
 
       this.mongooseConnection = mongoose.connection;
       this.mongoClient = this.mongooseConnection;
       this.mongoDb = this.mongooseConnection.db;
 
-      this.mongooseConnection.on("error", (error) => {
+      this.mongooseConnection.on("error", (error) => {});
 
+      this.mongooseConnection.on("disconnected", () => {});
 
-
-      });
-
-      this.mongooseConnection.on("disconnected", () => {
-
-      });
-
-      this.mongooseConnection.on("connected", () => {
-
-
-
-      });
-
-
-
+      this.mongooseConnection.on("connected", () => {});
 
       return this.mongooseConnection;
     })().catch(async (error) => {
       const details = error?.cause?.code || error?.code || "unknown";
       if (
-      this.mongodbUrl?.startsWith("mongodb+srv://") && (
-      await this.isSrvFallbackError(error)))
-      {
-
-
-
+        this.mongodbUrl?.startsWith("mongodb+srv://") &&
+        (await this.isSrvFallbackError(error))
+      ) {
         try {
           const fallbackUri = await this.createFallbackUriFromSrv(
-            this.mongodbUrl
+            this.mongodbUrl,
           );
           const safeFallbackUri = fallbackUri.replace(
             /(mongodb:\/\/)([^:]+):([^@]+)@/,
-            "$1$2:*****@"
+            "$1$2:*****@",
           );
-
-
 
           await mongoose.connect(fallbackUri, mongoOptions);
 
@@ -322,23 +298,14 @@ export class MessageServer extends EventEmitter {
           this.mongoClient = this.mongooseConnection;
           this.mongoDb = this.mongooseConnection.db;
 
-
-
-
           return this.mongooseConnection;
         } catch (fallbackError) {
           const fallbackDetails =
-          fallbackError?.cause?.code || fallbackError?.code || "unknown";
-
-
-
+            fallbackError?.cause?.code || fallbackError?.code || "unknown";
         }
       }
 
       if (!this.mongoConnectionWarningShown) {
-
-
-
         this.mongoConnectionWarningShown = true;
       }
       this.mongoConnectionDisabled = true;
@@ -376,17 +343,12 @@ export class MessageServer extends EventEmitter {
       }
 
       this.mongoProfilesCollection = this.mongoDb.collection(
-        this.mongoProfilesColl
+        this.mongoProfilesColl,
       );
-
-
-
 
       return this.mongoProfilesCollection;
     } catch (error) {
       const details = error?.cause?.code || error?.code || "unknown";
-
-
 
       this.mongoClient = null;
       this.mongooseConnection = null;
@@ -494,18 +456,18 @@ export class MessageServer extends EventEmitter {
 
   isAdminEmail(email) {
     return (
-      (email || "").toString().trim().toLowerCase() === "mdikram295@gmail.com");
-
+      (email || "").toString().trim().toLowerCase() === "mdikram295@gmail.com"
+    );
   }
 
   normalizeRole(role, user = null) {
     const normalized = (role || "").toString().toLowerCase().trim();
     const email = (user?.email || "").toString().trim().toLowerCase();
     if (
-    normalized === "admin" ||
-    normalized === "administrator" ||
-    this.isAdminEmail(email))
-    {
+      normalized === "admin" ||
+      normalized === "administrator" ||
+      this.isAdminEmail(email)
+    ) {
       return "admin";
     }
     return "user";
@@ -522,10 +484,10 @@ export class MessageServer extends EventEmitter {
     }
 
     if (
-    typeof candidate === "object" &&
-    candidate !== null &&
-    candidate.toString)
-    {
+      typeof candidate === "object" &&
+      candidate !== null &&
+      candidate.toString
+    ) {
       return candidate.toString();
     }
 
@@ -538,14 +500,14 @@ export class MessageServer extends EventEmitter {
     }
 
     const candidate =
-    data?.clientId ||
-    data?.username ||
-    data?.conversationId ||
-    data?.conversation_id ||
-    data?.clientUsername ||
-    data?.client ||
-    data?.id ||
-    null;
+      data?.clientId ||
+      data?.username ||
+      data?.conversationId ||
+      data?.conversation_id ||
+      data?.clientUsername ||
+      data?.client ||
+      data?.id ||
+      null;
     return candidate || null;
   }
 
@@ -555,16 +517,16 @@ export class MessageServer extends EventEmitter {
     }
 
     let candidate =
-    data.conversationId ||
-    data.conversation_id ||
-    data.clientId ||
-    data.username ||
-    data.clientUsername ||
-    data.client ||
-    data?.clients?.[0]?.conversationId ||
-    data?.clients?.[0]?.username ||
-    data?.clients?.[0]?.clientId ||
-    null;
+      data.conversationId ||
+      data.conversation_id ||
+      data.clientId ||
+      data.username ||
+      data.clientUsername ||
+      data.client ||
+      data?.clients?.[0]?.conversationId ||
+      data?.clients?.[0]?.username ||
+      data?.clients?.[0]?.clientId ||
+      null;
 
     if (!candidate && data.url) {
       const match = String(data.url).match(/\/inbox\/([^/?#]+)/i);
@@ -583,20 +545,20 @@ export class MessageServer extends EventEmitter {
 
     if (typeof value === "object") {
       const nestedCandidates = [
-      value.username,
-      value.clientUsername,
-      value.client,
-      value.conversationId,
-      value.conversation_id,
-      value.id,
-      value._id,
-      value.clientKey,
-      value.name,
-      value.displayName,
-      value.value,
-      value?.profile?.username,
-      value?.user?.username];
-
+        value.username,
+        value.clientUsername,
+        value.client,
+        value.conversationId,
+        value.conversation_id,
+        value.id,
+        value._id,
+        value.clientKey,
+        value.name,
+        value.displayName,
+        value.value,
+        value?.profile?.username,
+        value?.user?.username,
+      ];
 
       for (const nestedValue of nestedCandidates) {
         const normalized = this.normalizeClientLookupValue(nestedValue);
@@ -607,11 +569,11 @@ export class MessageServer extends EventEmitter {
       return null;
     }
 
-    return String(value).
-    trim().
-    toLowerCase().
-    replace(/^@/, "").
-    replace(/[^a-z0-9]+/g, "");
+    return String(value)
+      .trim()
+      .toLowerCase()
+      .replace(/^@/, "")
+      .replace(/[^a-z0-9]+/g, "");
   }
 
   getClientLookupVariants(value) {
@@ -623,7 +585,7 @@ export class MessageServer extends EventEmitter {
     const variants = new Set([normalized]);
     const stripped = normalized.replace(
       /^(user|client|conversation|conv|seller|profile|inbox|chat)([_-]?)/,
-      ""
+      "",
     );
     if (stripped && stripped !== normalized) {
       variants.add(stripped);
@@ -631,7 +593,7 @@ export class MessageServer extends EventEmitter {
 
     const withoutTrailingRole = normalized.replace(
       /(?:[_-]?(?:user|client|seller|profile|conversation|conv|inbox|chat))$/,
-      ""
+      "",
     );
     if (withoutTrailingRole && withoutTrailingRole !== normalized) {
       variants.add(withoutTrailingRole);
@@ -642,29 +604,29 @@ export class MessageServer extends EventEmitter {
 
   clientMatchesAssignedIds(client, assignedIds = []) {
     const candidateKeys = [
-    client?._id,
-    client?.id,
-    client?.clientId,
-    client?.client_id,
-    client?.clientKey,
-    client?.username,
-    client?.clientUsername,
-    client?.client,
-    client?.profile?.username,
-    client?.user?.username].
-
-    flatMap((item) => this.getClientLookupVariants(item)).
-    map((item) => this.normalizeClientLookupValue(item)).
-    filter(Boolean);
+      client?._id,
+      client?.id,
+      client?.clientId,
+      client?.client_id,
+      client?.clientKey,
+      client?.username,
+      client?.clientUsername,
+      client?.client,
+      client?.profile?.username,
+      client?.user?.username,
+    ]
+      .flatMap((item) => this.getClientLookupVariants(item))
+      .map((item) => this.normalizeClientLookupValue(item))
+      .filter(Boolean);
 
     if (candidateKeys.length === 0) {
       return false;
     }
 
-    const normalizedAssignedIds = (assignedIds || []).
-    flatMap((item) => this.getClientLookupVariants(item)).
-    map((item) => this.normalizeClientLookupValue(item)).
-    filter(Boolean);
+    const normalizedAssignedIds = (assignedIds || [])
+      .flatMap((item) => this.getClientLookupVariants(item))
+      .map((item) => this.normalizeClientLookupValue(item))
+      .filter(Boolean);
 
     if (normalizedAssignedIds.length === 0) {
       return false;
@@ -672,7 +634,7 @@ export class MessageServer extends EventEmitter {
 
     const assignedIdSet = new Set(normalizedAssignedIds);
     return candidateKeys.some((candidateKey) =>
-    assignedIdSet.has(candidateKey)
+      assignedIdSet.has(candidateKey),
     );
   }
 
@@ -685,32 +647,32 @@ export class MessageServer extends EventEmitter {
       _id: payload._id,
       id: payload.id,
       clientKey:
-      payload.clientKey ||
-      payload.conversationId ||
-      payload.conversation_id ||
-      payload.username ||
-      payload.clientUsername ||
-      payload.client ||
-      null,
+        payload.clientKey ||
+        payload.conversationId ||
+        payload.conversation_id ||
+        payload.username ||
+        payload.clientUsername ||
+        payload.client ||
+        null,
       conversationId: payload.conversationId || payload.conversation_id,
       username:
-      payload.username || payload.clientUsername || payload.client || null,
+        payload.username || payload.clientUsername || payload.client || null,
       clientUsername: payload.clientUsername,
       client: payload.client,
       name: payload.name,
-      displayName: payload.displayName
+      displayName: payload.displayName,
     };
 
     if (
-    payload.clients &&
-    Array.isArray(payload.clients) &&
-    payload.clients.length > 0)
-    {
+      payload.clients &&
+      Array.isArray(payload.clients) &&
+      payload.clients.length > 0
+    ) {
       if (
-      payload.clients.some((client) =>
-      this.clientMatchesAssignedIds(client, assignedIds)
-      ))
-      {
+        payload.clients.some((client) =>
+          this.clientMatchesAssignedIds(client, assignedIds),
+        )
+      ) {
         return true;
       }
     }
@@ -719,23 +681,23 @@ export class MessageServer extends EventEmitter {
   }
 
   async filterMessagePayloadsForUser(
-  user,
-  payloads = [],
-  targetConversationId = null)
-  {
+    user,
+    payloads = [],
+    targetConversationId = null,
+  ) {
     const isAdmin = user && this.normalizeRole(user.role, user) === "admin";
     const normalizedTarget =
-    this.normalizeClientLookupValue(targetConversationId);
+      this.normalizeClientLookupValue(targetConversationId);
 
     if (isAdmin) {
       const allPayloads = (payloads || []).map((payload) =>
-      payload ? JSON.parse(JSON.stringify(payload)) : payload
+        payload ? JSON.parse(JSON.stringify(payload)) : payload,
       );
       if (!normalizedTarget) {
         return allPayloads;
       }
       return allPayloads.filter((payload) =>
-      this.payloadMatchesConversationTarget(payload, normalizedTarget)
+        this.payloadMatchesConversationTarget(payload, normalizedTarget),
       );
     }
 
@@ -753,7 +715,7 @@ export class MessageServer extends EventEmitter {
 
       const matchesAssigned = this.payloadMatchesAssignedIds(
         payload,
-        assignedIds
+        assignedIds,
       );
       if (!matchesAssigned) {
         continue;
@@ -785,30 +747,17 @@ export class MessageServer extends EventEmitter {
   async filterClientListForUser(user, clientListPayload) {
     const isAdmin = user && this.normalizeRole(user.role, user) === "admin";
     if (!clientListPayload) {
-
-
-
       return clientListPayload;
     }
 
     const sanitizedPayload = {
       ...clientListPayload,
-      clients: this.sanitizeClientListClients(
-        clientListPayload.clients || []
-      )
+      clients: this.sanitizeClientListClients(clientListPayload.clients || []),
     };
 
-    const clientCount = Array.isArray(sanitizedPayload.clients) ?
-    sanitizedPayload.clients.length :
-    0;
-
-
-
-
-
-
-
-
+    const clientCount = Array.isArray(sanitizedPayload.clients)
+      ? sanitizedPayload.clients.length
+      : 0;
 
     if (isAdmin) {
       return sanitizedPayload;
@@ -816,32 +765,20 @@ export class MessageServer extends EventEmitter {
 
     const assignedIds = await this.getAssignedClientIds(user);
 
-
-
-
-
-
     if (!assignedIds.length) {
-
-
-
       return {
         ...clientListPayload,
-        clients: []
+        clients: [],
       };
     }
 
     const filteredClients = (sanitizedPayload.clients || []).filter((client) =>
-    this.clientMatchesAssignedIds(client, assignedIds)
+      this.clientMatchesAssignedIds(client, assignedIds),
     );
-
-
-
-
 
     return {
       ...sanitizedPayload,
-      clients: filteredClients
+      clients: filteredClients,
     };
   }
 
@@ -881,10 +818,10 @@ export class MessageServer extends EventEmitter {
 
     const normalizedIds = Array.from(
       new Set(
-        (clientIds || []).
-        filter(Boolean).
-        map((value) => this.getUserIdentifier({ _id: value }))
-      )
+        (clientIds || [])
+          .filter(Boolean)
+          .map((value) => this.getUserIdentifier({ _id: value })),
+      ),
     );
     await coll.deleteMany({ userId: normalizedUserId });
 
@@ -897,7 +834,7 @@ export class MessageServer extends EventEmitter {
       userId: normalizedUserId,
       clientId,
       created_at: new Date().toISOString(),
-      updated_at: new Date().toISOString()
+      updated_at: new Date().toISOString(),
     }));
 
     await coll.insertMany(docs);
@@ -939,16 +876,16 @@ export class MessageServer extends EventEmitter {
         conversationId: clientKey,
         username: clientKey,
         clientUsername: clientKey,
-        client: clientKey
+        client: clientKey,
       },
-      assignedIds
+      assignedIds,
     );
   }
 
   looksLikeFiverrSlug(value) {
-    const slug = String(value || "").
-    trim().
-    replace(/^@/, "");
+    const slug = String(value || "")
+      .trim()
+      .replace(/^@/, "");
     if (!slug || slug.includes(" ")) {
       return false;
     }
@@ -970,8 +907,8 @@ export class MessageServer extends EventEmitter {
     }
     return (
       normalizedValue.includes(normalizedTarget) ||
-      normalizedTarget.includes(normalizedValue));
-
+      normalizedTarget.includes(normalizedValue)
+    );
   }
 
   payloadMatchesConversationTarget(payload, normalizedTarget) {
@@ -983,19 +920,19 @@ export class MessageServer extends EventEmitter {
     }
 
     const candidateValues = [
-    payload?.conversationId,
-    payload?.conversation_id,
-    payload?.username,
-    payload?.clientUsername,
-    payload?.client,
-    payload?.clients?.[0]?.conversationId,
-    payload?.clients?.[0]?.conversation_id,
-    payload?.clients?.[0]?.username,
-    payload?.clients?.[0]?.clientUsername,
-    payload?.clients?.[0]?.client,
-    payload?.clients?.[0]?.id,
-    payload?.clients?.[0]?.clientId].
-    filter(Boolean);
+      payload?.conversationId,
+      payload?.conversation_id,
+      payload?.username,
+      payload?.clientUsername,
+      payload?.client,
+      payload?.clients?.[0]?.conversationId,
+      payload?.clients?.[0]?.conversation_id,
+      payload?.clients?.[0]?.username,
+      payload?.clients?.[0]?.clientUsername,
+      payload?.clients?.[0]?.client,
+      payload?.clients?.[0]?.id,
+      payload?.clients?.[0]?.clientId,
+    ].filter(Boolean);
 
     return candidateValues.some((value) => {
       const normalizedValue = this.normalizeClientLookupValue(value);
@@ -1010,47 +947,58 @@ export class MessageServer extends EventEmitter {
 
     const slugUsage = new Map();
     for (const client of clients) {
-      const slug = [client?.username, client?.conversationId, client?.conversation_id].
-      map((value) => String(value || "").trim()).
-      find((value) => this.looksLikeFiverrSlug(value));
+      const slug = [
+        client?.username,
+        client?.conversationId,
+        client?.conversation_id,
+      ]
+        .map((value) => String(value || "").trim())
+        .find((value) => this.looksLikeFiverrSlug(value));
       if (!slug) continue;
-      slugUsage.set(slug.toLowerCase(), (slugUsage.get(slug.toLowerCase()) || 0) + 1);
+      slugUsage.set(
+        slug.toLowerCase(),
+        (slugUsage.get(slug.toLowerCase()) || 0) + 1,
+      );
     }
 
     return clients.map((client, index) => {
       const copy = { ...(client || {}) };
-      let slug = [copy.username, copy.conversationId, copy.conversation_id].
-      map((value) => String(value || "").trim()).
-      find((value) => this.looksLikeFiverrSlug(value));
+      let slug = [copy.username, copy.conversationId, copy.conversation_id]
+        .map((value) => String(value || "").trim())
+        .find((value) => this.looksLikeFiverrSlug(value));
 
       if (slug && (slugUsage.get(slug.toLowerCase()) || 0) > 1) {
         const sameSlugRows = clients.filter((row) => {
-          const rowSlug = [row?.username, row?.conversationId, row?.conversation_id].
-          map((value) => String(value || "").trim()).
-          find((value) => this.looksLikeFiverrSlug(value));
+          const rowSlug = [
+            row?.username,
+            row?.conversationId,
+            row?.conversation_id,
+          ]
+            .map((value) => String(value || "").trim())
+            .find((value) => this.looksLikeFiverrSlug(value));
           return rowSlug && rowSlug.toLowerCase() === slug.toLowerCase();
         });
         const uniqueNames = new Set(
-          sameSlugRows.
-          map((row) => String(row?.name || row?.displayName || "").trim()).
-          filter(Boolean)
+          sameSlugRows
+            .map((row) => String(row?.name || row?.displayName || "").trim())
+            .filter(Boolean),
         );
         if (uniqueNames.size > 1) {
           slug = null;
           if (
-          copy.conversationId &&
-          String(copy.conversationId).toLowerCase() ===
-          String(sameSlugRows[0]?.conversationId || "").toLowerCase())
-          {
+            copy.conversationId &&
+            String(copy.conversationId).toLowerCase() ===
+              String(sameSlugRows[0]?.conversationId || "").toLowerCase()
+          ) {
             copy.conversationId = null;
             copy.conversation_id = null;
           }
         }
       }
 
-      const nameKey = copy.name ?
-      `name:${String(copy.name).trim().toLowerCase()}` :
-      null;
+      const nameKey = copy.name
+        ? `name:${String(copy.name).trim().toLowerCase()}`
+        : null;
       const rowKey = slug || nameKey || `row:${index}`;
       const username = slug || copy.username || copy.name || rowKey;
 
@@ -1062,22 +1010,22 @@ export class MessageServer extends EventEmitter {
         username,
         conversationId: slug || copy.conversationId || null,
         name: copy.name || copy.displayName || username || "Unknown",
-        displayName: copy.displayName || copy.name || username || "Unknown"
+        displayName: copy.displayName || copy.name || username || "Unknown",
       };
     });
   }
 
   buildClientDocument(data) {
     const username =
-    data.username || data.clientUsername || data.client || null;
+      data.username || data.clientUsername || data.client || null;
     const conversationId =
-    data.conversationId || data.conversation_id || username || null;
+      data.conversationId || data.conversation_id || username || null;
     const candidateKey =
-    data._id ||
-    data.id ||
-    username ||
-    conversationId ||
-    `client_${Date.now()}`;
+      data._id ||
+      data.id ||
+      username ||
+      conversationId ||
+      `client_${Date.now()}`;
 
     const clientKey = String(candidateKey);
 
@@ -1096,7 +1044,7 @@ export class MessageServer extends EventEmitter {
       metadata: data.metadata || data.clientData || {},
       created_at: data.created_at || data.createdAt || new Date().toISOString(),
       updated_at: new Date().toISOString(),
-      ...data
+      ...data,
     };
   }
 
@@ -1110,16 +1058,12 @@ export class MessageServer extends EventEmitter {
       if (!fs.existsSync(this.localUsersFilePath)) {
         fs.writeFileSync(
           this.localUsersFilePath,
-          JSON.stringify({ users: [] }, null, 2)
+          JSON.stringify({ users: [] }, null, 2),
         );
       }
 
       this.loadLocalUsersStore();
-    } catch (error) {
-
-
-
-    }
+    } catch (error) {}
   }
 
   loadLocalUsersStore() {
@@ -1138,37 +1082,35 @@ export class MessageServer extends EventEmitter {
           this.localUsers.set(user.email.toLowerCase().trim(), user);
         }
       }
-    } catch (error) {
-
-
-
-    }
+    } catch (error) {}
   }
 
   persistLocalUsersStore() {
     try {
       const users = Array.from(this.localUsers.values()).map((user) => ({
         ...user,
-        authTokens: user.authTokens || []
+        authTokens: user.authTokens || [],
       }));
 
       fs.writeFileSync(
         this.localUsersFilePath,
-        JSON.stringify({ users }, null, 2)
+        JSON.stringify({ users }, null, 2),
       );
-    } catch (error) {
-
-
-
-    }
+    } catch (error) {}
   }
 
   async hashPassword(password, salt = null) {
+
+
+          )
+        )
+
+
     const actualSalt = salt || crypto.randomBytes(16).toString("hex");
     const derivedKey = crypto.scryptSync(password, actualSalt, 64);
     return {
       salt: actualSalt,
-      hash: derivedKey.toString("hex")
+      hash: derivedKey.toString("hex"),
     };
   }
 
@@ -1199,16 +1141,16 @@ export class MessageServer extends EventEmitter {
         authTokens: {
           $elemMatch: {
             token: token,
-            expires: { $gt: now }
-          }
-        }
+            expires: { $gt: now },
+          },
+        },
       });
     }
 
     const user = Array.from(this.localUsers.values()).find((entry) =>
-    (entry.authTokens || []).some(
-      (item) => item.token === token && new Date(item.expires) > new Date()
-    )
+      (entry.authTokens || []).some(
+        (item) => item.token === token && new Date(item.expires) > new Date(),
+      ),
     );
     return user || null;
   }
@@ -1237,12 +1179,12 @@ export class MessageServer extends EventEmitter {
         $push: {
           authTokens: {
             token,
-            expires
-          }
+            expires,
+          },
         },
-        $set: { updated_at: new Date().toISOString() }
+        $set: { updated_at: new Date().toISOString() },
       },
-      { upsert: false }
+      { upsert: false },
     );
     return result.modifiedCount > 0;
   }
@@ -1252,7 +1194,7 @@ export class MessageServer extends EventEmitter {
     if (!coll) {
       for (const [email, user] of this.localUsers.entries()) {
         const nextTokens = (user.authTokens || []).filter(
-          (item) => item.token !== token
+          (item) => item.token !== token,
         );
         if (nextTokens.length !== (user.authTokens || []).length) {
           user.authTokens = nextTokens;
@@ -1265,7 +1207,7 @@ export class MessageServer extends EventEmitter {
 
     const result = await coll.updateOne(
       { "authTokens.token": token },
-      { $pull: { authTokens: { token } } }
+      { $pull: { authTokens: { token } } },
     );
     return result.modifiedCount > 0;
   }
@@ -1289,7 +1231,7 @@ export class MessageServer extends EventEmitter {
         role: this.isAdminEmail(normalizedEmail) ? "admin" : "user",
         authTokens: [],
         created_at: new Date().toISOString(),
-        updated_at: new Date().toISOString()
+        updated_at: new Date().toISOString(),
       };
 
       await coll.insertOne(user);
@@ -1310,7 +1252,7 @@ export class MessageServer extends EventEmitter {
       role: this.isAdminEmail(normalizedEmail) ? "admin" : "user",
       authTokens: [],
       created_at: new Date().toISOString(),
-      updated_at: new Date().toISOString()
+      updated_at: new Date().toISOString(),
     };
 
     this.localUsers.set(normalizedEmail, user);
@@ -1326,7 +1268,7 @@ export class MessageServer extends EventEmitter {
     const valid = await this.verifyPassword(
       password,
       user.passwordSalt,
-      user.passwordHash
+      user.passwordHash,
     );
     return valid ? user : null;
   }
@@ -1339,8 +1281,8 @@ export class MessageServer extends EventEmitter {
       "Access-Control-Allow-Origin": "*",
       "Access-Control-Allow-Methods": "GET, POST, PUT, DELETE, OPTIONS, HEAD",
       "Access-Control-Allow-Headers":
-      "Content-Type, Authorization, X-Requested-With",
-      "Access-Control-Max-Age": "86400"
+        "Content-Type, Authorization, X-Requested-With",
+      "Access-Control-Max-Age": "86400",
     });
     res.end(body);
   }
@@ -1366,9 +1308,6 @@ export class MessageServer extends EventEmitter {
 
         const trimmedBody = body.trim();
 
-
-
-
         if (!trimmedBody) {
           resolve({});
           return;
@@ -1383,9 +1322,9 @@ export class MessageServer extends EventEmitter {
               const parseObjectLikePayload = (input) => {
                 const trimmedInput = input.trim();
                 if (
-                !trimmedInput.startsWith("{") ||
-                !trimmedInput.endsWith("}"))
-                {
+                  !trimmedInput.startsWith("{") ||
+                  !trimmedInput.endsWith("}")
+                ) {
                   throw new Error("Unsupported object format");
                 }
 
@@ -1394,38 +1333,38 @@ export class MessageServer extends EventEmitter {
                   return {};
                 }
 
-                const entries = content.
-                split(",").
-                map((part) => part.trim()).
-                filter(Boolean).
-                map((part) => {
-                  const separatorIndex = part.indexOf(":");
-                  if (separatorIndex === -1) {
-                    return null;
-                  }
+                const entries = content
+                  .split(",")
+                  .map((part) => part.trim())
+                  .filter(Boolean)
+                  .map((part) => {
+                    const separatorIndex = part.indexOf(":");
+                    if (separatorIndex === -1) {
+                      return null;
+                    }
 
-                  const rawKey = part.slice(0, separatorIndex).trim();
-                  const rawValue = part.slice(separatorIndex + 1).trim();
-                  const normalizedKey = rawKey.replace(/^['"]|['"]$/g, "");
+                    const rawKey = part.slice(0, separatorIndex).trim();
+                    const rawValue = part.slice(separatorIndex + 1).trim();
+                    const normalizedKey = rawKey.replace(/^['"]|['"]$/g, "");
 
-                  let normalizedValue = rawValue;
-                  if (/^(true|false)$/i.test(normalizedValue)) {
-                    normalizedValue =
-                    normalizedValue.toLowerCase() === "true";
-                  } else if (/^-?\d+(?:\.\d+)?$/.test(normalizedValue)) {
-                    normalizedValue = Number(normalizedValue);
-                  } else if (normalizedValue === "null") {
-                    normalizedValue = null;
-                  } else {
-                    normalizedValue = normalizedValue.replace(
-                      /^['"]|['"]$/g,
-                      ""
-                    );
-                  }
+                    let normalizedValue = rawValue;
+                    if (/^(true|false)$/i.test(normalizedValue)) {
+                      normalizedValue =
+                        normalizedValue.toLowerCase() === "true";
+                    } else if (/^-?\d+(?:\.\d+)?$/.test(normalizedValue)) {
+                      normalizedValue = Number(normalizedValue);
+                    } else if (normalizedValue === "null") {
+                      normalizedValue = null;
+                    } else {
+                      normalizedValue = normalizedValue.replace(
+                        /^['"]|['"]$/g,
+                        "",
+                      );
+                    }
 
-                  return [normalizedKey, normalizedValue];
-                }).
-                filter(Boolean);
+                    return [normalizedKey, normalizedValue];
+                  })
+                  .filter(Boolean);
 
                 return Object.fromEntries(entries);
               };
@@ -1461,7 +1400,7 @@ export class MessageServer extends EventEmitter {
 
     if (!email || !username || !password) {
       return this.sendJsonResponse(res, 400, {
-        error: "Missing username, email, or password"
+        error: "Missing username, email, or password",
       });
     }
 
@@ -1474,11 +1413,11 @@ export class MessageServer extends EventEmitter {
         token,
         username: user.username,
         email: user.email,
-        role: this.normalizeRole(user.role, user)
+        role: this.normalizeRole(user.role, user),
       });
     } catch (error) {
       return this.sendJsonResponse(res, 400, {
-        error: error.message || "Failed to register user"
+        error: error.message || "Failed to register user",
       });
     }
   }
@@ -1489,7 +1428,7 @@ export class MessageServer extends EventEmitter {
 
     if (!email || !password) {
       return this.sendJsonResponse(res, 400, {
-        error: "Missing email or password"
+        error: "Missing email or password",
       });
     }
 
@@ -1497,7 +1436,7 @@ export class MessageServer extends EventEmitter {
       const user = await this.authenticateUser({ email, password });
       if (!user) {
         return this.sendJsonResponse(res, 401, {
-          error: "Invalid email or password"
+          error: "Invalid email or password",
         });
       }
 
@@ -1508,11 +1447,11 @@ export class MessageServer extends EventEmitter {
         token,
         username: user.username,
         email: user.email,
-        role: this.normalizeRole(user.role, user)
+        role: this.normalizeRole(user.role, user),
       });
     } catch (error) {
       return this.sendJsonResponse(res, 500, {
-        error: error.message || "Failed to log in"
+        error: error.message || "Failed to log in",
       });
     }
   }
@@ -1520,14 +1459,14 @@ export class MessageServer extends EventEmitter {
   async handleMe(req, res, token) {
     if (!token) {
       return this.sendJsonResponse(res, 401, {
-        error: "Missing auth token"
+        error: "Missing auth token",
       });
     }
 
     const user = await this.getUserByToken(token);
     if (!user) {
       return this.sendJsonResponse(res, 401, {
-        error: "Invalid or expired token"
+        error: "Invalid or expired token",
       });
     }
 
@@ -1536,27 +1475,27 @@ export class MessageServer extends EventEmitter {
       id: user._id || user.id || null,
       username: user.username,
       email: user.email,
-      role: this.normalizeRole(user.role, user)
+      role: this.normalizeRole(user.role, user),
     });
   }
 
   async handleLogout(req, res, token) {
     if (!token) {
       return this.sendJsonResponse(res, 401, {
-        error: "Missing auth token"
+        error: "Missing auth token",
       });
     }
 
     const removed = await this.invalidateAuthToken(token);
     if (!removed) {
       return this.sendJsonResponse(res, 400, {
-        error: "Token invalid or already logged out"
+        error: "Token invalid or already logged out",
       });
     }
 
     return this.sendJsonResponse(res, 200, {
       success: true,
-      message: "Logged out successfully"
+      message: "Logged out successfully",
     });
   }
 
@@ -1568,16 +1507,16 @@ export class MessageServer extends EventEmitter {
     const user = await this.getUserByToken(token);
     if (!user) {
       return this.sendJsonResponse(res, 401, {
-        error: "Invalid or expired token"
+        error: "Invalid or expired token",
       });
     }
 
     const assignments = await this.getAssignmentsForUser(
-      this.getUserIdentifier(user)
+      this.getUserIdentifier(user),
     );
     return this.sendJsonResponse(res, 200, {
       assignments,
-      clientIds: assignments.map((item) => item.clientId).filter(Boolean)
+      clientIds: assignments.map((item) => item.clientId).filter(Boolean),
     });
   }
 
@@ -1607,10 +1546,10 @@ export class MessageServer extends EventEmitter {
       return this.sendJsonResponse(res, 200, { clients: [] });
     }
 
-    const clients = await coll.
-    find({ _id: { $ne: "client_list" } }).
-    sort({ updated_at: -1 }).
-    toArray();
+    const clients = await coll
+      .find({ _id: { $ne: "client_list" } })
+      .sort({ updated_at: -1 })
+      .toArray();
     return this.sendJsonResponse(res, 200, { clients });
   }
 
@@ -1620,10 +1559,10 @@ export class MessageServer extends EventEmitter {
       return this.sendJsonResponse(res, 200, { clients: [] });
     }
 
-    const clients = await coll.
-    find({ _id: { $ne: "client_list" } }).
-    sort({ updated_at: -1 }).
-    toArray();
+    const clients = await coll
+      .find({ _id: { $ne: "client_list" } })
+      .sort({ updated_at: -1 })
+      .toArray();
 
     let user = null;
     if (token) {
@@ -1663,7 +1602,7 @@ export class MessageServer extends EventEmitter {
       const result = await coll.updateOne(
         { _id: clientId },
         { $set: updateDoc },
-        { upsert: false }
+        { upsert: false },
       );
       if (!result.matchedCount) {
         return this.sendJsonResponse(res, 404, { error: "Client not found" });
@@ -1730,14 +1669,14 @@ export class MessageServer extends EventEmitter {
         updateDoc.editedText = body.text;
         updateDoc.text = body.text;
         updateDoc.edited_by =
-        user._id || user.id || user.email || user.username || null;
+          user._id || user.id || user.email || user.username || null;
         updateDoc.edited_at = new Date().toISOString();
       }
 
       const result = await coll.updateOne(
         { _id: messageId },
         { $set: updateDoc },
-        { upsert: false }
+        { upsert: false },
       );
       if (!result.matchedCount) {
         return this.sendJsonResponse(res, 404, { error: "Message not found" });
@@ -1748,28 +1687,19 @@ export class MessageServer extends EventEmitter {
       try {
         const payload = {
           conversationId: updated.conversationId,
-          message: updated
+          message: updated,
         };
         this.broadcastToExpoClients({ type: "message_updated", data: payload });
         for (const [sid, desktopWs] of this.connectedClients.entries()) {
           if (this.clientTypes.get(sid) === "desktop") {
             try {
               desktopWs.send(
-                JSON.stringify({ type: "message_updated", data: payload })
+                JSON.stringify({ type: "message_updated", data: payload }),
               );
-            } catch (error) {
-
-
-
-            }
+            } catch (error) {}
           }
         }
-      } catch (err) {
-
-
-
-
-      }
+      } catch (err) {}
 
       return this.sendJsonResponse(res, 200, { message: updated });
     }
@@ -1793,21 +1723,12 @@ export class MessageServer extends EventEmitter {
           if (this.clientTypes.get(sid) === "desktop") {
             try {
               desktopWs.send(
-                JSON.stringify({ type: "message_deleted", data: payload })
+                JSON.stringify({ type: "message_deleted", data: payload }),
               );
-            } catch (error) {
-
-
-
-            }
+            } catch (error) {}
           }
         }
-      } catch (err) {
-
-
-
-
-      }
+      } catch (err) {}
 
       return this.sendJsonResponse(res, 200, { success: true });
     }
@@ -1826,11 +1747,11 @@ export class MessageServer extends EventEmitter {
       return this.sendJsonResponse(res, 200, { users: [] });
     }
 
-    const users = await coll.
-    find({}).
-    project({ passwordHash: 0, passwordSalt: 0, authTokens: 0 }).
-    sort({ created_at: -1 }).
-    toArray();
+    const users = await coll
+      .find({})
+      .project({ passwordHash: 0, passwordSalt: 0, authTokens: 0 })
+      .sort({ created_at: -1 })
+      .toArray();
     return this.sendJsonResponse(res, 200, { users });
   }
 
@@ -1843,16 +1764,13 @@ export class MessageServer extends EventEmitter {
     if (req.method === "POST") {
       const body = await this.parseJsonBody(req);
 
-
-
-
       const success = await this.setUserClientAssignments(
         body.userId,
-        body.clientIds || []
+        body.clientIds || [],
       );
       if (!success) {
         return this.sendJsonResponse(res, 400, {
-          error: "Unable to save assignments"
+          error: "Unable to save assignments",
         });
       }
       const assignments = await this.getAssignmentsForUser(body.userId);
@@ -1869,8 +1787,22 @@ export class MessageServer extends EventEmitter {
     return this.sendJsonResponse(res, 200, { assignments });
   }
 
-  /**
-   * Load seller profiles from MongoDB or JSON file
+  /
+      ),
+    )
+
+      ),
+    )
+
+        ,
+
+
+
+      **
+   * Load seller profiles from
+
+
+        MongoDB or JSON file
    */
   parseSellerProfilesFromObject(data) {
     const profiles = new Map();
@@ -1905,7 +1837,7 @@ export class MessageServer extends EventEmitter {
 
     for await (const doc of cursor) {
       const username =
-      doc.username || (typeof doc._id === "string" ? doc._id : null);
+        doc.username || (typeof doc._id === "string" ? doc._id : null);
       if (username) {
         const entry = { ...doc };
         delete entry._id;
@@ -1925,7 +1857,7 @@ export class MessageServer extends EventEmitter {
       if (fs.existsSync(jsonPath)) {
         const data = JSON.parse(fs.readFileSync(jsonPath, "utf-8"));
         for (const [username, profile] of this.parseSellerProfilesFromObject(
-          data
+          data,
         )) {
           profiles.set(username, profile);
         }
@@ -1934,19 +1866,15 @@ export class MessageServer extends EventEmitter {
         if (fs.existsSync(legacyPath)) {
           const single = JSON.parse(fs.readFileSync(legacyPath, "utf-8"));
           if (
-          typeof single === "object" &&
-          single !== null &&
-          single.username)
-          {
+            typeof single === "object" &&
+            single !== null &&
+            single.username
+          ) {
             profiles.set(single.username, single);
           }
         }
       }
-    } catch (error) {
-
-
-
-    }
+    } catch (error) {}
 
     return profiles;
   }
@@ -1954,9 +1882,6 @@ export class MessageServer extends EventEmitter {
   async loadSellerProfiles() {
     const coll = await this.getMongoProfilesCollection();
     if (!coll) {
-
-
-
       this.sellerProfiles = new Map();
       this.sellerProfile = null;
       return;
@@ -1971,24 +1896,12 @@ export class MessageServer extends EventEmitter {
           this.sellerProfiles = migrated;
           await this.saveSellerProfiles();
           profiles = migrated;
-
-
-
         }
       }
 
       this.sellerProfiles = profiles;
       this.sellerProfile = this.pickLatestSellerProfile(profiles);
-
-
-
-
-
-
     } catch (error) {
-
-
-
       this.sellerProfiles = new Map();
       this.sellerProfile = null;
     }
@@ -2004,9 +1917,6 @@ export class MessageServer extends EventEmitter {
 
     const coll = await this.getMongoProfilesCollection();
     if (!coll) {
-
-
-
       return;
     }
 
@@ -2017,17 +1927,10 @@ export class MessageServer extends EventEmitter {
         await coll.replaceOne(
           { _id: username },
           { ...payload, _id: username },
-          { upsert: true }
+          { upsert: true },
         );
       }
-
-
-
-    } catch (error) {
-
-
-
-    }
+    } catch (error) {}
   }
 
   messageLooksFromMe(message) {
@@ -2035,11 +1938,9 @@ export class MessageServer extends EventEmitter {
     if (message.isFromMe === true || message.isFromMe === "true") {
       return true;
     }
-    const sender = String(
-      message.senderUsername || message.sender || ""
-    ).
-    trim().
-    toLowerCase();
+    const sender = String(message.senderUsername || message.sender || "")
+      .trim()
+      .toLowerCase();
     return sender === "me";
   }
 
@@ -2051,11 +1952,11 @@ export class MessageServer extends EventEmitter {
     let id = String(raw).trim();
     id = id.replace(
       /_[A-Z][a-z]{2}\s+\d{1,2},\s+\d{1,2}:\d{2}\s*(?:AM|PM)$/i,
-      ""
+      "",
     );
     id = id.replace(/_\d{4}-\d{2}-\d{2}T[\d:.+-]+Z?$/i, "");
     const fiverrCore = id.match(
-      /([a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9-]{4,}-[a-f0-9]{12}_[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9-]{4,}-[a-f0-9]{12})/i
+      /([a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9-]{4,}-[a-f0-9]{12}_[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9-]{4,}-[a-f0-9]{12})/i,
     );
     if (fiverrCore) {
       return fiverrCore[1].toLowerCase();
@@ -2070,31 +1971,31 @@ export class MessageServer extends EventEmitter {
     }
 
     try {
-      const docs = await coll.
-      find({}).
-      sort({ timestamp: 1, created_at: 1 }).
-      toArray();
+      const docs = await coll
+        .find({})
+        .sort({ timestamp: 1, created_at: 1 })
+        .toArray();
 
       const isGeneric = (val) => {
         if (!val) return true;
-        const norm = String(val).
-        trim().
-        toLowerCase().
-        replace(/^@/, "").
-        replace(/[^a-z0-9]+/g, "");
+        const norm = String(val)
+          .trim()
+          .toLowerCase()
+          .replace(/^@/, "")
+          .replace(/[^a-z0-9]+/g, "");
         return (
           !norm ||
           [
-          "conversation",
-          "default",
-          "undefined",
-          "null",
-          "messages",
-          "client",
-          "objectobject"].
-          includes(norm) ||
-          norm.startsWith("message"));
-
+            "conversation",
+            "default",
+            "undefined",
+            "null",
+            "messages",
+            "client",
+            "objectobject",
+          ].includes(norm) ||
+          norm.startsWith("message")
+        );
       };
 
       const grouped = new Map();
@@ -2102,21 +2003,21 @@ export class MessageServer extends EventEmitter {
         const fromMe = this.messageLooksFromMe(doc);
         const senderValue = doc.senderUsername || doc.sender;
         const buyerSender =
-        !fromMe &&
-        !isGeneric(senderValue) &&
-        String(senderValue).trim().toLowerCase() !== "me" &&
-        String(senderValue).trim().toLowerCase() !== "client" ?
-        senderValue :
-        null;
+          !fromMe &&
+          !isGeneric(senderValue) &&
+          String(senderValue).trim().toLowerCase() !== "me" &&
+          String(senderValue).trim().toLowerCase() !== "client"
+            ? senderValue
+            : null;
 
         // Prefer the buyer/peer identity so seller ("me") rows that were
         // historically keyed under the seller username still land in the
         // client conversation for the first paint before extract.
         const conversationId =
-        (!isGeneric(doc.clientUsername) ? doc.clientUsername : null) ||
-        buyerSender || (
-        !isGeneric(doc.conversationId) ? doc.conversationId : null) || (
-        !isGeneric(doc.clientId) ? doc.clientId : null);
+          (!isGeneric(doc.clientUsername) ? doc.clientUsername : null) ||
+          buyerSender ||
+          (!isGeneric(doc.conversationId) ? doc.conversationId : null) ||
+          (!isGeneric(doc.clientId) ? doc.clientId : null);
 
         if (!conversationId) {
           continue;
@@ -2126,7 +2027,7 @@ export class MessageServer extends EventEmitter {
           grouped.set(conversationId, {
             conversationId,
             messages: [],
-            clients: []
+            clients: [],
           });
         }
 
@@ -2138,7 +2039,7 @@ export class MessageServer extends EventEmitter {
           sender: fromMe ? "me" : doc.sender || buyerSender || conversationId,
           isFromMe: fromMe,
           clientUsername: doc.clientUsername || conversationId,
-          conversationId
+          conversationId,
         });
       }
 
@@ -2150,25 +2051,22 @@ export class MessageServer extends EventEmitter {
         if (clientColl) {
           clientDoc = await clientColl.findOne({
             $or: [
-            { _id: entry.conversationId },
-            { username: entry.conversationId },
-            { conversationId: entry.conversationId }]
-
+              { _id: entry.conversationId },
+              { username: entry.conversationId },
+              { conversationId: entry.conversationId },
+            ],
           });
         }
 
         payloads.push({
           conversationId: entry.conversationId,
           clients: clientDoc ? [clientDoc] : [],
-          messages: entry.messages
+          messages: entry.messages,
         });
       }
 
       return payloads;
     } catch (error) {
-
-
-
       return [];
     }
   }
@@ -2196,19 +2094,19 @@ export class MessageServer extends EventEmitter {
       let clientDoc = null;
       const candidateKeys = Array.from(
         new Set(
-          clientCandidates.
-          map((candidate) => this.getClientLookupKey(candidate)).
-          filter(Boolean)
-        )
+          clientCandidates
+            .map((candidate) => this.getClientLookupKey(candidate))
+            .filter(Boolean),
+        ),
       );
 
       for (const candidateKey of candidateKeys) {
         const existing = await clientColl.findOne({
           $or: [
-          { _id: candidateKey },
-          { username: candidateKey },
-          { conversationId: candidateKey }]
-
+            { _id: candidateKey },
+            { username: candidateKey },
+            { conversationId: candidateKey },
+          ],
         });
         if (existing) {
           clientDoc = existing;
@@ -2219,79 +2117,79 @@ export class MessageServer extends EventEmitter {
       if (!clientDoc && conversationId) {
         clientDoc = await clientColl.findOne({
           $or: [
-          { _id: conversationId },
-          { username: conversationId },
-          { conversationId }]
-
+            { _id: conversationId },
+            { username: conversationId },
+            { conversationId },
+          ],
         });
       }
 
       const clientId = clientDoc?._id || clientDoc?.id || null;
       const clientKeyForId =
-      conversationId || clientId || this.getClientLookupKey(data) || null;
+        conversationId || clientId || this.getClientLookupKey(data) || null;
 
       const isGeneric = (val) => {
         if (!val) return true;
-        const norm = String(val).
-        trim().
-        toLowerCase().
-        replace(/^@/, "").
-        replace(/[^a-z0-9]+/g, "");
+        const norm = String(val)
+          .trim()
+          .toLowerCase()
+          .replace(/^@/, "")
+          .replace(/[^a-z0-9]+/g, "");
         return (
           !norm ||
           [
-          "conversation",
-          "default",
-          "undefined",
-          "null",
-          "messages",
-          "client",
-          "objectobject"].
-          includes(norm) ||
-          norm.startsWith("message"));
-
+            "conversation",
+            "default",
+            "undefined",
+            "null",
+            "messages",
+            "client",
+            "objectobject",
+          ].includes(norm) ||
+          norm.startsWith("message")
+        );
       };
 
       const peerConversationId =
-      (!isGeneric(conversationId) ? conversationId : null) || (
-      !isGeneric(clientId) ? clientId : null) || (
-      !isGeneric(clientKeyForId) ? clientKeyForId : null);
+        (!isGeneric(conversationId) ? conversationId : null) ||
+        (!isGeneric(clientId) ? clientId : null) ||
+        (!isGeneric(clientKeyForId) ? clientKeyForId : null);
 
       for (const [index, message] of messages.entries()) {
         const fromMe = this.messageLooksFromMe(message);
         const msgSender = message.senderUsername || message.sender;
         const isValidSpecificSender =
-        msgSender &&
-        !isGeneric(msgSender) &&
-        String(msgSender).trim().toLowerCase() !== "me" &&
-        String(msgSender).trim().toLowerCase() !== "client";
+          msgSender &&
+          !isGeneric(msgSender) &&
+          String(msgSender).trim().toLowerCase() !== "me" &&
+          String(msgSender).trim().toLowerCase() !== "client";
 
         // Buyer rows can refine the peer id. Seller/outgoing rows must stay on
         // the client conversation — never under the seller account username.
         const perMsgSenderId =
-        !fromMe && isValidSpecificSender ? msgSender : null;
+          !fromMe && isValidSpecificSender ? msgSender : null;
 
         const safeConversationId =
-        (!isGeneric(perMsgSenderId) ? perMsgSenderId : null) ||
-        peerConversationId || (
-        !isGeneric(this.getClientLookupKey(message)) ?
-        this.getClientLookupKey(message) :
-        null);
+          (!isGeneric(perMsgSenderId) ? perMsgSenderId : null) ||
+          peerConversationId ||
+          (!isGeneric(this.getClientLookupKey(message))
+            ? this.getClientLookupKey(message)
+            : null);
 
         if (!safeConversationId) {
           continue;
         }
 
         const timestampValue =
-        message.timestamp ||
-        message.time ||
-        message.date ||
-        new Date().toISOString();
+          message.timestamp ||
+          message.time ||
+          message.date ||
+          new Date().toISOString();
 
         const cleanMsgId =
-        message.id && !String(message.id).startsWith("message-") ?
-        String(message.id) :
-        `msg_${index}`;
+          message.id && !String(message.id).startsWith("message-")
+            ? String(message.id)
+            : `msg_${index}`;
 
         // Keep Fiverr's native id on `id` so the app can dedupe against live
         // extracts. Use a stable conversation-scoped key for Mongo `_id`.
@@ -2301,39 +2199,29 @@ export class MessageServer extends EventEmitter {
           _id: messageId,
           id: cleanMsgId,
           clientId: safeConversationId,
-          clientUsername:
-          message.clientUsername ||
-          safeConversationId,
+          clientUsername: message.clientUsername || safeConversationId,
           conversationId: safeConversationId,
-          sender: fromMe ?
-          "me" :
-          message.sender && message.sender !== "client" ?
-          message.sender :
-          safeConversationId,
+          sender: fromMe
+            ? "me"
+            : message.sender && message.sender !== "client"
+              ? message.sender
+              : safeConversationId,
           text: message.text || message.content || message.message || "",
           timestamp: timestampValue,
           isFromMe: fromMe,
           metadata: message.metadata || {},
           created_at:
-          message.created_at || message.createdAt || new Date().toISOString(),
-          updated_at: new Date().toISOString()
+            message.created_at || message.createdAt || new Date().toISOString(),
+          updated_at: new Date().toISOString(),
         };
 
         await coll.updateOne(
           { _id: payload._id },
           { $set: payload },
-          { upsert: true }
+          { upsert: true },
         );
       }
-
-
-
-
-    } catch (error) {
-
-
-
-    }
+    } catch (error) {}
   }
 
   /**
@@ -2356,17 +2244,9 @@ export class MessageServer extends EventEmitter {
       await coll.updateOne(
         { _id: payload._id },
         { $set: payload },
-        { upsert: true }
+        { upsert: true },
       );
-
-
-
-
-    } catch (error) {
-
-
-
-    }
+    } catch (error) {}
   }
 
   /**
@@ -2391,18 +2271,10 @@ export class MessageServer extends EventEmitter {
         await coll.updateOne(
           { _id: payload._id },
           { $set: payload },
-          { upsert: true }
+          { upsert: true },
         );
       }
-
-
-
-
-    } catch (error) {
-
-
-
-    }
+    } catch (error) {}
   }
 
   /**
@@ -2411,10 +2283,10 @@ export class MessageServer extends EventEmitter {
    */
   async ensureClientListHydratedFromMongo() {
     if (
-    this.storedClientList &&
-    Array.isArray(this.storedClientList.clients) &&
-    this.storedClientList.clients.length > 0)
-    {
+      this.storedClientList &&
+      Array.isArray(this.storedClientList.clients) &&
+      this.storedClientList.clients.length > 0
+    ) {
       return this.storedClientList;
     }
 
@@ -2424,10 +2296,10 @@ export class MessageServer extends EventEmitter {
         return this.storedClientList;
       }
 
-      const clients = await coll.
-      find({ _id: { $ne: "client_list" } }).
-      sort({ updated_at: -1 }).
-      toArray();
+      const clients = await coll
+        .find({ _id: { $ne: "client_list" } })
+        .sort({ updated_at: -1 })
+        .toArray();
 
       if (!Array.isArray(clients) || clients.length === 0) {
         return this.storedClientList;
@@ -2436,7 +2308,7 @@ export class MessageServer extends EventEmitter {
       this.storedClientList = {
         clients,
         timestamp: new Date().toISOString(),
-        source: "mongo_hydrate"
+        source: "mongo_hydrate",
       };
       return this.storedClientList;
     } catch (_error) {
@@ -2458,7 +2330,7 @@ export class MessageServer extends EventEmitter {
     const online = this.getOnlineUsernames();
     return Array.from(this.sellerProfiles.values()).map((profile) => ({
       ...profile,
-      online: online.has(profile.username)
+      online: online.has(profile.username),
     }));
   }
 
@@ -2468,8 +2340,9 @@ export class MessageServer extends EventEmitter {
   mergeTwoMessagePayloads(left, right) {
     const base = { ...(left || {}), ...(right || {}) };
     const combined = [
-    ...(Array.isArray(left?.messages) ? left.messages : []),
-    ...(Array.isArray(right?.messages) ? right.messages : [])];
+      ...(Array.isArray(left?.messages) ? left.messages : []),
+      ...(Array.isArray(right?.messages) ? right.messages : []),
+    ];
 
     const bySignature = new Map();
 
@@ -2481,21 +2354,21 @@ export class MessageServer extends EventEmitter {
         isFromMe: fromMe,
         sender: fromMe ? "me" : message.sender,
         clientUsername:
-        message.clientUsername ||
-        base.clientUsername ||
-        base.conversationId ||
-        this.getMessageConversationKey(base) ||
-        null
+          message.clientUsername ||
+          base.clientUsername ||
+          base.conversationId ||
+          this.getMessageConversationKey(base) ||
+          null,
       };
       const canonicalId = this.canonicalMessageId(normalized);
       const text = String(
-        normalized.text || normalized.content || normalized.message || ""
-      ).
-      trim().
-      toLowerCase();
-      const signature = canonicalId ?
-      `id:${canonicalId}` :
-      `text:${text}|${fromMe ? "me" : "client"}|${normalized.timestamp || normalized.time || ""}`;
+        normalized.text || normalized.content || normalized.message || "",
+      )
+        .trim()
+        .toLowerCase();
+      const signature = canonicalId
+        ? `id:${canonicalId}`
+        : `text:${text}|${fromMe ? "me" : "client"}|${normalized.timestamp || normalized.time || ""}`;
       const existing = bySignature.get(signature);
       if (!existing) {
         bySignature.set(signature, normalized);
@@ -2504,20 +2377,22 @@ export class MessageServer extends EventEmitter {
       // Prefer seller/outgoing ownership and richer attachment payloads.
       const existingFromMe = this.messageLooksFromMe(existing);
       const preferIncoming =
-      fromMe && !existingFromMe ||
-      (Array.isArray(normalized.images) ? normalized.images.length : 0) >
-      (Array.isArray(existing.images) ? existing.images.length : 0);
+        (fromMe && !existingFromMe) ||
+        (Array.isArray(normalized.images) ? normalized.images.length : 0) >
+          (Array.isArray(existing.images) ? existing.images.length : 0);
       bySignature.set(
         signature,
-        preferIncoming ? { ...existing, ...normalized, isFromMe: fromMe || existingFromMe } : { ...normalized, ...existing, isFromMe: fromMe || existingFromMe }
+        preferIncoming
+          ? { ...existing, ...normalized, isFromMe: fromMe || existingFromMe }
+          : { ...normalized, ...existing, isFromMe: fromMe || existingFromMe },
       );
     }
 
     base.messages = Array.from(bySignature.values());
     base.conversationId =
-    right?.conversationId ||
-    left?.conversationId ||
-    this.getMessageConversationKey(base);
+      right?.conversationId ||
+      left?.conversationId ||
+      this.getMessageConversationKey(base);
     return base;
   }
 
@@ -2527,7 +2402,7 @@ export class MessageServer extends EventEmitter {
     for (const payload of [...(persisted || []), ...(inMemory || [])]) {
       if (!payload) continue;
       const key = this.normalizeClientLookupValue(
-        this.getMessageConversationKey(payload)
+        this.getMessageConversationKey(payload),
       );
       if (!key) continue;
 
@@ -2536,10 +2411,7 @@ export class MessageServer extends EventEmitter {
         byConversation.set(key, JSON.parse(JSON.stringify(payload)));
         continue;
       }
-      byConversation.set(
-        key,
-        this.mergeTwoMessagePayloads(existing, payload)
-      );
+      byConversation.set(key, this.mergeTwoMessagePayloads(existing, payload));
     }
 
     return Array.from(byConversation.values());
@@ -2549,54 +2421,48 @@ export class MessageServer extends EventEmitter {
    * Handle message received
    */
   onMessageReceived(data) {
-
-
-
     const messageCount = (data.messages || []).length;
-
 
     const conversationId = this.getMessageConversationKey(data);
     if (messageCount === 0 && conversationId) {
-
-
-
       return;
     }
 
     const normalizedData = JSON.parse(JSON.stringify(data));
     const peerKey =
-    this.getMessageConversationKey(normalizedData) ||
-    normalizedData.clientUsername ||
-    null;
+      this.getMessageConversationKey(normalizedData) ||
+      normalizedData.clientUsername ||
+      null;
     if (peerKey) {
       normalizedData.conversationId = peerKey;
       normalizedData.username = normalizedData.username || peerKey;
-      normalizedData.clientUsername =
-      normalizedData.clientUsername || peerKey;
-      normalizedData.messages = (normalizedData.messages || []).map((message) => {
-        const fromMe = this.messageLooksFromMe(message);
-        return {
-          ...message,
-          isFromMe: fromMe,
-          sender: fromMe ? "me" : message.sender,
-          conversationId: peerKey,
-          clientUsername: message.clientUsername || peerKey
-        };
-      });
+      normalizedData.clientUsername = normalizedData.clientUsername || peerKey;
+      normalizedData.messages = (normalizedData.messages || []).map(
+        (message) => {
+          const fromMe = this.messageLooksFromMe(message);
+          return {
+            ...message,
+            isFromMe: fromMe,
+            sender: fromMe ? "me" : message.sender,
+            conversationId: peerKey,
+            clientUsername: message.clientUsername || peerKey,
+          };
+        },
+      );
     }
     this.storedMessageData = normalizedData;
     const storageKeyRaw = this.getMessageConversationKey(normalizedData);
     const storageKey =
-    this.normalizeClientLookupValue(storageKeyRaw) || storageKeyRaw;
+      this.normalizeClientLookupValue(storageKeyRaw) || storageKeyRaw;
     if (storageKey) {
       const existing =
-      this.storedMessageDataByConversation.get(storageKey) || (
-      storageKeyRaw && storageKeyRaw !== storageKey ?
-      this.storedMessageDataByConversation.get(storageKeyRaw) :
-      null);
-      const merged = existing ?
-      this.mergeTwoMessagePayloads(existing, normalizedData) :
-      normalizedData;
+        this.storedMessageDataByConversation.get(storageKey) ||
+        (storageKeyRaw && storageKeyRaw !== storageKey
+          ? this.storedMessageDataByConversation.get(storageKeyRaw)
+          : null);
+      const merged = existing
+        ? this.mergeTwoMessagePayloads(existing, normalizedData)
+        : normalizedData;
       this.storedMessageDataByConversation.set(storageKey, merged);
       if (storageKeyRaw && storageKeyRaw !== storageKey) {
         this.storedMessageDataByConversation.delete(storageKeyRaw);
@@ -2605,109 +2471,80 @@ export class MessageServer extends EventEmitter {
       this.emit("message_received", merged);
       this.broadcastToExpoClients({
         type: "message_data",
-        data: merged
+        data: merged,
       });
     } else {
       this.emit("message_received", data);
       this.broadcastToExpoClients({
         type: "message_data",
-        data: data
+        data: data,
       });
     }
 
     // Save to MongoDB
     this.saveMessagesToMongo(
-      storageKey ?
-      this.storedMessageDataByConversation.get(storageKey) :
-      normalizedData
-    ).catch((err) => {
-
-
-
-    });
-
-
+      storageKey
+        ? this.storedMessageDataByConversation.get(storageKey)
+        : normalizedData,
+    ).catch((err) => {});
   }
 
   /**
    * Handle client data received
    */
   onClientDataReceived(data) {
-
-
-
-
     const normalizedData = JSON.parse(JSON.stringify(data));
     const key =
-    this.getClientLookupKey(normalizedData) ||
-    normalizedData.username ||
-    normalizedData.conversationId ||
-    "default";
+      this.getClientLookupKey(normalizedData) ||
+      normalizedData.username ||
+      normalizedData.conversationId ||
+      "default";
     this.storedClientData.set(key, normalizedData);
 
     // Save to MongoDB
-    this.saveClientDataToMongo(normalizedData).catch((err) => {
-
-
-
-    });
+    this.saveClientDataToMongo(normalizedData).catch((err) => {});
 
     // Emit event
     this.emit("client_data_received", data);
 
-
-
     // Broadcast to Expo clients
     this.broadcastToExpoClients({
       type: "client_data",
-      data: data
+      data: data,
     });
-
-
-
-
   }
 
   /**
    * Handle client list received
    */
   async onClientListReceived(data) {
-
-
-
-
-
-
-
     const normalizedData = JSON.parse(JSON.stringify(data || {}));
-    const clients = Array.isArray(normalizedData.clients) ?
-    normalizedData.clients :
-    [];
+    const clients = Array.isArray(normalizedData.clients)
+      ? normalizedData.clients
+      : [];
 
-    normalizedData.clients = this.sanitizeClientListClients(clients).map((client) => {
-      const payload = this.buildClientDocument(client);
-      return {
-        ...payload,
-        ...client,
-        _id: client._id || payload._id,
-        id: client.id || payload.id,
-        clientKey: client.clientKey || payload.clientKey,
-        username: client.username || payload.username,
-        conversationId: client.conversationId || payload.conversationId,
-        updated_at: client.updated_at || payload.updated_at,
-        created_at: client.created_at || payload.created_at
-      };
-    });
+    normalizedData.clients = this.sanitizeClientListClients(clients).map(
+      (client) => {
+        const payload = this.buildClientDocument(client);
+        return {
+          ...payload,
+          ...client,
+          _id: client._id || payload._id,
+          id: client.id || payload.id,
+          clientKey: client.clientKey || payload.clientKey,
+          username: client.username || payload.username,
+          conversationId: client.conversationId || payload.conversationId,
+          updated_at: client.updated_at || payload.updated_at,
+          created_at: client.created_at || payload.created_at,
+        };
+      },
+    );
 
     // Store normalized data so Expo clients receive stable client IDs
     this.storedClientList = normalizedData;
 
     // Save to MongoDB
-    this.saveClientListToMongo(normalizedData).catch((err) => {
-
-
-
-    });
+    this.saveClientListToMongo(normalizedData).catch((err) => {});
 
     // Emit event
     this.emit("client_list_received", normalizedData);
@@ -2715,22 +2552,14 @@ export class MessageServer extends EventEmitter {
     // Broadcast to Expo clients
     this.broadcastToExpoClients({
       type: "client_list_data",
-      data: normalizedData
+      data: normalizedData,
     });
-
-
-
-
   }
 
   /**
    * Handle new message detected
    */
   onNewMessageDetected(data) {
-
-
-
-
     // Store data
     this.storedNewMessages.push(JSON.parse(JSON.stringify(data)));
     if (this.storedNewMessages.length > 100) {
@@ -2743,15 +2572,11 @@ export class MessageServer extends EventEmitter {
     // Broadcast to Expo clients via WebSocket (if app is running)
     this.broadcastToExpoClients({
       type: "new_message_detected",
-      data: data
+      data: data,
     });
 
     // Push to native + web PWA even when the app/tab is closed.
     this.sendPushNotificationForMessage(data).catch(() => {});
-
-
-
-
   }
 
   getMessagePushDedupeKey(messageData = {}) {
@@ -2761,7 +2586,7 @@ export class MessageServer extends EventEmitter {
       messageData.username ||
       "unknown";
     const text = String(
-      messageData.messageText || messageData.lastMessage || ""
+      messageData.messageText || messageData.lastMessage || "",
     )
       .trim()
       .slice(0, 80);
@@ -2797,13 +2622,12 @@ export class MessageServer extends EventEmitter {
     try {
       await this.connectMongo();
       if (!this.mongoDb) return null;
-      this.mongoPushSubscriptionsCollection = this.mongoDb.collection(
-        "push_subscriptions"
-      );
+      this.mongoPushSubscriptionsCollection =
+        this.mongoDb.collection("push_subscriptions");
       try {
         await this.mongoPushSubscriptionsCollection.createIndex(
           { endpoint: 1 },
-          { unique: true }
+          { unique: true },
         );
       } catch (_) {}
       return this.mongoPushSubscriptionsCollection;
@@ -2828,7 +2652,7 @@ export class MessageServer extends EventEmitter {
           subscription: row.subscription,
           userId: row.userId || null,
           sessionId: row.sessionId || null,
-          registeredAt: row.registeredAt || Date.now()
+          registeredAt: row.registeredAt || Date.now(),
         });
       }
     } catch (_) {}
@@ -2850,10 +2674,10 @@ export class MessageServer extends EventEmitter {
             userId: record.userId || null,
             sessionId: record.sessionId || null,
             registeredAt: record.registeredAt || Date.now(),
-            updatedAt: new Date()
-          }
+            updatedAt: new Date(),
+          },
         },
-        { upsert: true }
+        { upsert: true },
       );
     } catch (_) {}
   }
@@ -2898,7 +2722,7 @@ export class MessageServer extends EventEmitter {
       conversationId,
       username,
       clientUsername,
-      isTest
+      isTest,
     } = messageData;
 
     const targets = await this.getAllPushTargets();
@@ -2926,8 +2750,8 @@ export class MessageServer extends EventEmitter {
         username: clientUsername || username || null,
         clientName: clientName || null,
         messageText: messageText || null,
-        isTest: isTest || false
-      }
+        isTest: isTest || false,
+      },
     });
 
     if (Array.isArray(result?.goneEndpoints)) {
@@ -2941,10 +2765,6 @@ export class MessageServer extends EventEmitter {
    * Handle client activated
    */
   onClientActivated(username) {
-
-
-
-
     // Store data
     if (!this.storedClientActivations.includes(username)) {
       this.storedClientActivations.push(username);
@@ -2956,10 +2776,6 @@ export class MessageServer extends EventEmitter {
     // Emit event for local server listeners, but do not broadcast client activation
     // globally to all Expo clients because this can cause selection and refresh loops.
     this.emit("client_activated", username);
-
-
-
-
   }
 
   /**
@@ -2967,9 +2783,9 @@ export class MessageServer extends EventEmitter {
    */
   onNewClientDetected(data) {
     const { clientUsername, clientName, clientData, url, timestamp } = data;
-    const usernameKey = String(clientUsername || clientData?.username || "").
-    trim().
-    toLowerCase();
+    const usernameKey = String(clientUsername || clientData?.username || "")
+      .trim()
+      .toLowerCase();
     if (!usernameKey) {
       return;
     }
@@ -2977,16 +2793,9 @@ export class MessageServer extends EventEmitter {
     const lastAlertAt = this.recentNewClientAlerts.get(usernameKey) || 0;
     const NEW_CLIENT_ALERT_COOLDOWN_MS = 60 * 60 * 1000;
     if (Date.now() - lastAlertAt < NEW_CLIENT_ALERT_COOLDOWN_MS) {
-
-
-
       return;
     }
     this.recentNewClientAlerts.set(usernameKey, Date.now());
-
-
-
-
 
     // Prepare client information
     const newClientInfo = {
@@ -2995,7 +2804,7 @@ export class MessageServer extends EventEmitter {
       conversationId: clientUsername,
       url: url || null,
       timestamp: timestamp || new Date().toISOString(),
-      isNewClient: true
+      isNewClient: true,
     };
 
     // Include additional client data if available
@@ -3011,28 +2820,16 @@ export class MessageServer extends EventEmitter {
     // Emit event
     this.emit("new_client_detected", newClientInfo);
 
-    this.saveClientDataToMongo(newClientInfo).catch((err) => {
-
-
-
-    });
+    this.saveClientDataToMongo(newClientInfo).catch((err) => {});
 
     // Broadcast to Expo clients via WebSocket (if app is running)
     this.broadcastToExpoClients({
       type: "new_client_detected",
-      data: newClientInfo
+      data: newClientInfo,
     });
 
     // Send push notifications to all registered tokens (works even when app is closed)
-    this.sendPushNotificationForNewClient(newClientInfo).catch((error) => {
-
-
-
-    });
-
-
-
-
+    this.sendPushNotificationForNewClient(newClientInfo).catch((error) => {});
   }
 
   getRegisteredPushTokens() {
@@ -3062,8 +2859,8 @@ export class MessageServer extends EventEmitter {
         username: username,
         clientName: name || username,
         conversationId: username,
-        isNewClient: true
-      }
+        isNewClient: true,
+      },
     });
 
     if (Array.isArray(result?.goneEndpoints)) {
@@ -3079,7 +2876,7 @@ export class MessageServer extends EventEmitter {
   broadcastSellerOnlineStatus() {
     this.broadcastToExpoClients({
       type: "seller_profiles",
-      data: this.getSellerProfilesWithOnline()
+      data: this.getSellerProfilesWithOnline(),
     });
 
     if (this.sellerProfile) {
@@ -3088,8 +2885,8 @@ export class MessageServer extends EventEmitter {
         type: "seller_profile",
         data: {
           ...this.sellerProfile,
-          online: online.has(this.sellerProfile.username)
-        }
+          online: online.has(this.sellerProfile.username),
+        },
       });
     }
   }
@@ -3107,7 +2904,7 @@ export class MessageServer extends EventEmitter {
 
     const sessionId = ws._sessionId;
     const wasBrowserOnline =
-    !!sessionId && this.browserProfileBySession.get(sessionId) != null;
+      !!sessionId && this.browserProfileBySession.get(sessionId) != null;
 
     this.clientSessions.delete(ws);
 
@@ -3124,15 +2921,7 @@ export class MessageServer extends EventEmitter {
       }
 
       this.broadcastExpoPresenceToBrowsers();
-
-
-
-
     }
-
-
-
-
   }
 
   /**
@@ -3152,7 +2941,7 @@ export class MessageServer extends EventEmitter {
     const expoConnected = this.isExpoConnected();
     const payload = JSON.stringify({
       type: "commands",
-      commands: [{ type: "set_expo_presence", expoConnected }]
+      commands: [{ type: "set_expo_presence", expoConnected }],
     });
 
     for (const [sessionId, browserWs] of this.connectedClients.entries()) {
@@ -3160,9 +2949,9 @@ export class MessageServer extends EventEmitter {
       try {
         browserWs.send(payload);
       } catch (_error) {
-
         // Socket is closing; cleanup will handle it.
-      }}
+      }
+    }
   }
 
   /**
@@ -3174,25 +2963,20 @@ export class MessageServer extends EventEmitter {
       return;
     }
 
-
-
-
     existingWs._superseded = true;
     this.clientSessions.delete(existingWs);
 
     try {
       existingWs.close(4000, "Replaced by new connection");
     } catch (_) {
-
       // Ignore close errors on dead sockets
-    }}
+    }
+  }
 
   /**
    * Handle WebSocket connection
    */
   handleWebSocketConnection(ws, req) {
-
-
     // Store session info on websocket object
     ws._sessionId = null;
     ws._clientType = "browser";
@@ -3210,27 +2994,19 @@ export class MessageServer extends EventEmitter {
         // Log raw incoming message for diagnostics (trim long payloads)
         try {
           const raw = String(message).slice(0, 2000);
-          console.log('[MessageServer] Raw WS message received', { session: ws._sessionId, clientType: ws._clientType, rawPreview: raw });
+          console.log("[MessageServer] Raw WS message received", {
+            session: ws._sessionId,
+            clientType: ws._clientType,
+            rawPreview: raw,
+          });
         } catch (_) {}
 
         const data = JSON.parse(message.toString());
 
-
-
         await this.handleMessage(data, ws);
       } catch (error) {
         if (error instanceof SyntaxError) {
-
-
-
-
-
-
         } else {
-
-
-
-
         }
       }
     });
@@ -3238,14 +3014,10 @@ export class MessageServer extends EventEmitter {
     ws.on("close", () => {
       const sessionId = ws._sessionId;
 
-
-
       this.cleanupWebSocketSession(ws, { broadcastOnline: !ws._superseded });
     });
 
-    ws.on("error", (error) => {
-
-    });
+    ws.on("error", (error) => {});
   }
 
   /**
@@ -3257,26 +3029,20 @@ export class MessageServer extends EventEmitter {
 
     // Log high-level message receipt
     try {
-      console.log('[MessageServer] handleMessage', { type: msgType, sessionId, clientType: ws._clientType });
+      console.log("[MessageServer] handleMessage", {
+        type: msgType,
+        sessionId,
+        clientType: ws._clientType,
+      });
     } catch (_) {}
 
-
-
-
     if (!sessionId && msgType !== "connect") {
-
-
-
       return;
     }
 
     if (msgType === "connect") {
       const newSessionId = data.session_id || generateSessionId(this);
       const clientType = data.client_type || "browser";
-
-
-
-
 
       const authToken = data.token || data.authToken || null;
       if (authToken) {
@@ -3301,13 +3067,6 @@ export class MessageServer extends EventEmitter {
       this.clientTypes.set(newSessionId, clientType);
       this.supersedeSessionSocket(existingWs, ws);
 
-
-
-
-
-
-
-
       this.broadcastExpoPresenceToBrowsers();
 
       // Send connection confirmation
@@ -3315,17 +3074,10 @@ export class MessageServer extends EventEmitter {
         const confirmMessage = JSON.stringify({
           type: "connected",
           session_id: newSessionId,
-          status: "ok"
+          status: "ok",
         });
         ws.send(confirmMessage);
-
-
-
-      } catch (error) {
-
-
-
-      }
+      } catch (error) {}
 
       // Send stored data based on client type
       if (clientType === "expo") {
@@ -3339,17 +3091,17 @@ export class MessageServer extends EventEmitter {
               type: "seller_profile",
               data: {
                 ...this.sellerProfile,
-                online: online.has(this.sellerProfile.username)
-              }
-            })
+                online: online.has(this.sellerProfile.username),
+              },
+            }),
           );
         }
         if (this.sellerProfiles.size > 0) {
           ws.send(
             JSON.stringify({
               type: "seller_profiles",
-              data: this.getSellerProfilesWithOnline()
-            })
+              data: this.getSellerProfilesWithOnline(),
+            }),
           );
         }
       } else {
@@ -3358,7 +3110,7 @@ export class MessageServer extends EventEmitter {
         if (this.sellerProfile?.username) {
           this.browserProfileBySession.set(
             newSessionId,
-            this.sellerProfile.username
+            this.sellerProfile.username,
           );
         }
         if (this.sellerProfile) {
@@ -3368,22 +3120,22 @@ export class MessageServer extends EventEmitter {
               type: "seller_profile",
               data: {
                 ...this.sellerProfile,
-                online: online.has(this.sellerProfile.username)
-              }
-            })
+                online: online.has(this.sellerProfile.username),
+              },
+            }),
           );
         }
         if (this.sellerProfiles.size > 0) {
           ws.send(
             JSON.stringify({
               type: "seller_profiles",
-              data: this.getSellerProfilesWithOnline()
-            })
+              data: this.getSellerProfilesWithOnline(),
+            }),
           );
         }
         this.broadcastToExpoClients({
           type: "seller_profiles",
-          data: this.getSellerProfilesWithOnline()
+          data: this.getSellerProfilesWithOnline(),
         });
         if (this.sellerProfile) {
           const online = this.getOnlineUsernames();
@@ -3391,8 +3143,8 @@ export class MessageServer extends EventEmitter {
             type: "seller_profile",
             data: {
               ...this.sellerProfile,
-              online: online.has(this.sellerProfile.username)
-            }
+              online: online.has(this.sellerProfile.username),
+            },
           });
         }
       }
@@ -3401,11 +3153,9 @@ export class MessageServer extends EventEmitter {
       // assuming a socket write meant the message reached Fiverr.
       const result = data.data || {};
 
-
-
       this.broadcastToExpoClients({
         type: "send_message_result",
-        data: result
+        data: result,
       });
     } else if (msgType === "message_data") {
       const messageData = data.data || data;
@@ -3416,8 +3166,8 @@ export class MessageServer extends EventEmitter {
         JSON.stringify({
           type: "ack",
           status: "success",
-          message: "Data received"
-        })
+          message: "Data received",
+        }),
       );
     } else if (msgType === "client_data") {
       const clientData = data.data || data;
@@ -3428,13 +3178,11 @@ export class MessageServer extends EventEmitter {
         JSON.stringify({
           type: "ack",
           status: "success",
-          message: "Client data received"
-        })
+          message: "Client data received",
+        }),
       );
     } else if (msgType === "client_list_data") {
       const clientListData = data.data || data;
-
-
 
       this.onClientListReceived(clientListData);
 
@@ -3442,13 +3190,11 @@ export class MessageServer extends EventEmitter {
         JSON.stringify({
           type: "ack",
           status: "success",
-          message: "Client list data received"
-        })
+          message: "Client list data received",
+        }),
       );
     } else if (msgType === "new_message_detected") {
       const newMessageData = data.data || data;
-
-
 
       this.onNewMessageDetected(newMessageData);
 
@@ -3456,16 +3202,13 @@ export class MessageServer extends EventEmitter {
         JSON.stringify({
           type: "ack",
           status: "success",
-          message: "New message detection received"
-        })
+          message: "New message detection received",
+        }),
       );
     } else if (msgType === "client_activated") {
       const clientData = data.data || data;
       const username =
-      typeof clientData === "object" ? clientData.username : data.username;
-
-
-
+        typeof clientData === "object" ? clientData.username : data.username;
 
       if (username) {
         this.onClientActivated(username);
@@ -3475,13 +3218,11 @@ export class MessageServer extends EventEmitter {
         JSON.stringify({
           type: "ack",
           status: "success",
-          message: "Client activated notification received"
-        })
+          message: "Client activated notification received",
+        }),
       );
     } else if (msgType === "new_client_detected") {
       const newClientData = data.data || data;
-
-
 
       this.onNewClientDetected(newClientData);
 
@@ -3489,14 +3230,10 @@ export class MessageServer extends EventEmitter {
         JSON.stringify({
           type: "ack",
           status: "success",
-          message: "New client detection received"
-        })
+          message: "New client detection received",
+        }),
       );
     } else if (msgType === "seller_profile") {
-
-
-
-
       const profileName = (data.profileName || data.profile_name || "").trim();
       let username = (data.username || "").trim();
       const avatarUrl = data.avatarUrl || data.avatar_url || null;
@@ -3511,7 +3248,7 @@ export class MessageServer extends EventEmitter {
           username: username,
           avatarUrl: avatarUrl,
           avatar_url: avatarUrl,
-          updated_at: new Date().toISOString()
+          updated_at: new Date().toISOString(),
         };
 
         this.sellerProfiles.set(username, entry);
@@ -3521,38 +3258,27 @@ export class MessageServer extends EventEmitter {
         // Track browser session as online
         const currentSessionId = ws._sessionId;
         if (
-        currentSessionId &&
-        this.clientTypes.get(currentSessionId) === "browser")
-        {
+          currentSessionId &&
+          this.clientTypes.get(currentSessionId) === "browser"
+        ) {
           this.browserProfileBySession.set(currentSessionId, username);
         }
 
         const online = this.getOnlineUsernames();
         const currentWithOnline = {
           ...this.sellerProfile,
-          online: online.has(username)
+          online: online.has(username),
         };
         const profilesWithOnline = this.getSellerProfilesWithOnline();
-
-
-
-
-
-
-
-
-
-
-
 
         // Broadcast to Expo/desktop
         this.broadcastToExpoClients({
           type: "seller_profile",
-          data: currentWithOnline
+          data: currentWithOnline,
         });
         this.broadcastToExpoClients({
           type: "seller_profiles",
-          data: profilesWithOnline
+          data: profilesWithOnline,
         });
 
         // Send to desktop clients
@@ -3562,62 +3288,46 @@ export class MessageServer extends EventEmitter {
               desktopWs.send(
                 JSON.stringify({
                   type: "seller_profile",
-                  data: currentWithOnline
-                })
+                  data: currentWithOnline,
+                }),
               );
               desktopWs.send(
                 JSON.stringify({
                   type: "seller_profiles",
-                  data: profilesWithOnline
-                })
+                  data: profilesWithOnline,
+                }),
               );
-            } catch (error) {
-
-
-
-            }
+            } catch (error) {}
           }
         }
-
-
-
-
       }
 
       ws.send(
         JSON.stringify({
           type: "ack",
           status: "success",
-          message: "Seller profile received and saved"
-        })
+          message: "Seller profile received and saved",
+        }),
       );
     } else if (msgType === "ping") {
       ws.send(JSON.stringify({ type: "pong" }));
     } else if (msgType === "request_all_data") {
-
-
-
       await this.sendStoredDataToExpo(ws);
     } else if (msgType === "request_client_list") {
       const currentUser = ws._user || null;
-
-
-
-
-
 
       await this.ensureClientListHydratedFromMongo();
 
       if (this.storedClientList) {
         const filteredClientList = await this.filterClientListForUser(
           currentUser,
-          this.storedClientList
+          this.storedClientList,
         );
         ws.send(
           JSON.stringify({
             type: "client_list_data",
-            data: filteredClientList
-          })
+            data: filteredClientList,
+          }),
         );
       } else {
         this.pendingClientListTrigger = true;
@@ -3626,49 +3336,33 @@ export class MessageServer extends EventEmitter {
           JSON.stringify({
             type: "ack",
             status: "pending",
-            message: "Client list pending extension extract"
-          })
+            message: "Client list pending extension extract",
+          }),
         );
       }
     } else if (msgType === "request_messages") {
       const target = data.conversationId || data.username || null;
       const currentUser = ws._user || null;
       const isAdmin =
-      currentUser &&
-      this.normalizeRole(currentUser.role, currentUser) === "admin";
-
-
-
-
-
-
-
-
+        currentUser &&
+        this.normalizeRole(currentUser.role, currentUser) === "admin";
 
       const persisted = await this.loadMessagesFromMongo();
       const inMemoryPayloads =
-      this.storedMessageDataByConversation.size > 0 ?
-      Array.from(this.storedMessageDataByConversation.values()) :
-      this.storedMessageData ?
-      [this.storedMessageData] :
-      [];
+        this.storedMessageDataByConversation.size > 0
+          ? Array.from(this.storedMessageDataByConversation.values())
+          : this.storedMessageData
+            ? [this.storedMessageData]
+            : [];
       const payloads = this.mergeMessagePayloadSources(
         persisted,
-        inMemoryPayloads
+        inMemoryPayloads,
       );
       const filteredPayloads = await this.filterMessagePayloadsForUser(
         currentUser,
         payloads,
-        target
+        target,
       );
-
-
-
-
-
-
-
-
 
       for (const pl of filteredPayloads || []) {
         if (pl) {
@@ -3683,32 +3377,24 @@ export class MessageServer extends EventEmitter {
       const clientKey = data.username || data.conversationId;
       const currentUser = ws._user || null;
       const isAdmin =
-      currentUser &&
-      this.normalizeRole(currentUser.role, currentUser) === "admin";
+        currentUser &&
+        this.normalizeRole(currentUser.role, currentUser) === "admin";
       const canAccess =
-      Boolean(currentUser) && (
-      isAdmin || (await this.canUserAccessClient(currentUser, clientKey)));
-
-
-
-
-
-
-
-
+        Boolean(currentUser) &&
+        (isAdmin || (await this.canUserAccessClient(currentUser, clientKey)));
 
       if (clientKey && this.storedClientData.has(clientKey) && canAccess) {
         const clientPayload = this.storedClientData.get(clientKey);
         const assignedIds = await this.getAssignedClientIds(currentUser);
         if (
-        isAdmin ||
-        this.payloadMatchesAssignedIds(clientPayload, assignedIds))
-        {
+          isAdmin ||
+          this.payloadMatchesAssignedIds(clientPayload, assignedIds)
+        ) {
           ws.send(
             JSON.stringify({
               type: "client_data",
-              data: clientPayload
-            })
+              data: clientPayload,
+            }),
           );
         }
       }
@@ -3716,14 +3402,9 @@ export class MessageServer extends EventEmitter {
       const action = data.action;
       const targetConversationId = data.conversationId || data.username || null;
 
-
-
-
-
-
       const command = {
         type: "trigger",
-        action: action
+        action: action,
       };
 
       // Preserve the target identifier so the extension activates and extracts
@@ -3739,26 +3420,19 @@ export class MessageServer extends EventEmitter {
 
       // Forward to browser extension clients
       const browserClients = Array.from(this.connectedClients.entries()).filter(
-        ([sid]) => this.clientTypes.get(sid) === "browser"
+        ([sid]) => this.clientTypes.get(sid) === "browser",
       );
 
       if (browserClients.length > 0) {
         const message = JSON.stringify({
           type: "commands",
-          commands: [command]
+          commands: [command],
         });
 
         for (const [, browserWs] of browserClients) {
           try {
             browserWs.send(message);
-
-
-
-          } catch (error) {
-
-
-
-          }
+          } catch (error) {}
         }
       } else if (action === "extract_client_list") {
         this.pendingClientListTrigger = true;
@@ -3772,36 +3446,33 @@ export class MessageServer extends EventEmitter {
         JSON.stringify({
           type: "ack",
           status: "success",
-          message: `Trigger command sent: ${action}`
-        })
+          message: `Trigger command sent: ${action}`,
+        }),
       );
     } else if (msgType === "click_client" || msgType === "clickFirstClient") {
       const rawUser = data.username || data.conversationId || "";
-      const username = String(rawUser).
-      trim().
-      replace(/^@/, "").
-      replace(
-        /^(user|client|conversation|conv|seller|profile|inbox|chat)[_:-]?/i,
-        ""
-      );
+      const username = String(rawUser)
+        .trim()
+        .replace(/^@/, "")
+        .replace(
+          /^(user|client|conversation|conv|seller|profile|inbox|chat)[_:-]?/i,
+          "",
+        );
       const useFirstClient =
-      data.useFirstClient || msgType === "clickFirstClient";
+        data.useFirstClient || msgType === "clickFirstClient";
       const timestamp = new Date().toISOString();
       const logEntry = {
         timestamp,
         type: msgType,
         username: username || null,
         useFirstClient,
-        source: "server-click-handler"
+        source: "server-click-handler",
       };
-
-
-
 
       fs.appendFileSync(
         path.join(__dirname, "click_events.log"),
         `${JSON.stringify(logEntry)}\n`,
-        "utf8"
+        "utf8",
       );
 
       let command;
@@ -3813,40 +3484,33 @@ export class MessageServer extends EventEmitter {
             JSON.stringify({
               type: "ack",
               status: "error",
-              message: "Username is required for click_client command"
-            })
+              message: "Username is required for click_client command",
+            }),
           );
           return;
         }
         command = {
           type: "click_client",
           username: username,
-          useFirstClient: false
+          useFirstClient: false,
         };
       }
 
       // Forward to browser extension clients
       const browserClients = Array.from(this.connectedClients.entries()).filter(
-        ([sid]) => this.clientTypes.get(sid) === "browser"
+        ([sid]) => this.clientTypes.get(sid) === "browser",
       );
 
       if (browserClients.length > 0) {
         const message = JSON.stringify({
           type: "commands",
-          commands: [command]
+          commands: [command],
         });
 
         for (const [, browserWs] of browserClients) {
           try {
             browserWs.send(message);
-
-
-
-          } catch (error) {
-
-
-
-          }
+          } catch (error) {}
         }
 
         if (username && !useFirstClient) {
@@ -3857,20 +3521,17 @@ export class MessageServer extends EventEmitter {
           JSON.stringify({
             type: "ack",
             status: "success",
-            message: `Click client command sent: ${username || "first client"}`
-          })
+            message: `Click client command sent: ${username || "first client"}`,
+          }),
         );
       } else {
-
-
-
         ws.send(
           JSON.stringify({
             type: "ack",
             status: "error",
             message:
-            "Browser extension is not connected. Open Fiverr in Chrome, click the extension icon, and activate the Fiverr tab."
-          })
+              "Browser extension is not connected. Open Fiverr in Chrome, click the extension icon, and activate the Fiverr tab.",
+          }),
         );
       }
       return;
@@ -3883,8 +3544,8 @@ export class MessageServer extends EventEmitter {
           delayMinutes: Number(settings.delayMinutes) || 30,
           apiKey: String(settings.apiKey || ""),
           model: String(settings.model || "gemini-3.5-flash"),
-          userProfile: settings.userProfile || null
-        }
+          userProfile: settings.userProfile || null,
+        },
       };
       this.autoReplyConfig = command.config;
 
@@ -3895,14 +3556,10 @@ export class MessageServer extends EventEmitter {
         if (this.clientTypes.get(sessionId) !== "browser") continue;
         try {
           browserWs.send(
-            JSON.stringify({ type: "commands", commands: [command] })
+            JSON.stringify({ type: "commands", commands: [command] }),
           );
           forwarded += 1;
-        } catch (error) {
-
-
-
-        }
+        } catch (error) {}
       }
 
       ws.send(
@@ -3910,10 +3567,10 @@ export class MessageServer extends EventEmitter {
           type: "ack",
           status: forwarded > 0 ? "success" : "warning",
           message:
-          forwarded > 0 ?
-          "Auto-reply settings synced to extension" :
-          "No browser extension connected for auto-reply settings"
-        })
+            forwarded > 0
+              ? "Auto-reply settings synced to extension"
+              : "No browser extension connected for auto-reply settings",
+        }),
       );
       return;
     } else if (msgType === "tab_reload_settings") {
@@ -3922,8 +3579,8 @@ export class MessageServer extends EventEmitter {
         type: "set_tab_reload_config",
         config: {
           global: settings.global || {},
-          profiles: settings.profiles || {}
-        }
+          profiles: settings.profiles || {},
+        },
       };
       this.tabReloadConfig = command.config;
 
@@ -3932,14 +3589,10 @@ export class MessageServer extends EventEmitter {
         if (this.clientTypes.get(sessionId) !== "browser") continue;
         try {
           browserWs.send(
-            JSON.stringify({ type: "commands", commands: [command] })
+            JSON.stringify({ type: "commands", commands: [command] }),
           );
           forwarded += 1;
-        } catch (error) {
-
-
-
-        }
+        } catch (error) {}
       }
 
       ws.send(
@@ -3947,40 +3600,36 @@ export class MessageServer extends EventEmitter {
           type: "ack",
           status: forwarded > 0 ? "success" : "warning",
           message:
-          forwarded > 0 ?
-          "Tab reload settings synced to extension" :
-          "No browser extension connected for tab reload settings"
-        })
+            forwarded > 0
+              ? "Tab reload settings synced to extension"
+              : "No browser extension connected for tab reload settings",
+        }),
       );
       return;
     } else if (msgType === "expo_app_activity") {
       const activity = data.data || {};
       this.expoAppActivity = {
         active: activity.active === true,
-        selectedProfileUsername: String(activity.selectedProfileUsername || "").
-        trim().
-        toLowerCase(),
-        at: Number(activity.at) || Date.now()
+        selectedProfileUsername: String(activity.selectedProfileUsername || "")
+          .trim()
+          .toLowerCase(),
+        at: Number(activity.at) || Date.now(),
       };
 
       const command = {
         type: "set_expo_app_activity",
         active: this.expoAppActivity.active,
         selectedProfileUsername: this.expoAppActivity.selectedProfileUsername,
-        at: this.expoAppActivity.at
+        at: this.expoAppActivity.at,
       };
 
       for (const [sessionId, browserWs] of this.connectedClients.entries()) {
         if (this.clientTypes.get(sessionId) !== "browser") continue;
         try {
           browserWs.send(
-            JSON.stringify({ type: "commands", commands: [command] })
+            JSON.stringify({ type: "commands", commands: [command] }),
           );
-        } catch (error) {
-
-
-
-        }
+        } catch (error) {}
       }
       return;
     } else if (msgType === "send_message") {
@@ -3992,7 +3641,7 @@ export class MessageServer extends EventEmitter {
           : String(rawMessageText || "").trim();
       const conversationId = data.conversationId;
       const username =
-      data.username || data.clientUsername || data.client || null;
+        data.username || data.clientUsername || data.client || null;
       const targetKey = conversationId || username || null;
 
       console.log("[MessageServer] received send_message", {
@@ -4004,11 +3653,14 @@ export class MessageServer extends EventEmitter {
       });
 
       if (!targetKey) {
-        console.warn("[MessageServer] send_message missing conversationId/username", {
-          incoming: data,
-          sessionId: ws._sessionId || null,
-          user: ws._user || null,
-        });
+        console.warn(
+          "[MessageServer] send_message missing conversationId/username",
+          {
+            incoming: data,
+            sessionId: ws._sessionId || null,
+            user: ws._user || null,
+          },
+        );
       }
 
       if (!messageText || !messageText.trim()) {
@@ -4016,36 +3668,32 @@ export class MessageServer extends EventEmitter {
           JSON.stringify({
             type: "ack",
             status: "error",
-            message: "Message text is required"
-          })
+            message: "Message text is required",
+          }),
         );
         return;
       }
 
       const currentUser = ws._user || null;
       if (
-      currentUser &&
-      this.normalizeRole(currentUser.role, currentUser) !== "admin")
-      {
+        currentUser &&
+        this.normalizeRole(currentUser.role, currentUser) !== "admin"
+      ) {
         const canAccess = await this.canUserAccessClient(
           currentUser,
-          targetKey
+          targetKey,
         );
         if (!canAccess) {
           ws.send(
             JSON.stringify({
               type: "ack",
               status: "error",
-              message: "You are not authorized to message this client"
-            })
+              message: "You are not authorized to message this client",
+            }),
           );
           return;
         }
       }
-
-
-
-
 
       const command = {
         type: "send_message",
@@ -4054,7 +3702,7 @@ export class MessageServer extends EventEmitter {
         body: messageText,
         conversationId: conversationId || username || null,
         username: username || conversationId || null,
-        autoReply: data.autoReply === true
+        autoReply: data.autoReply === true,
       };
 
       console.log("[MessageServer] forwarding send_message to extension", {
@@ -4066,7 +3714,7 @@ export class MessageServer extends EventEmitter {
 
       // Forward to browser extension clients
       const browserClients = Array.from(this.connectedClients.entries()).filter(
-        ([sid]) => this.clientTypes.get(sid) === "browser"
+        ([sid]) => this.clientTypes.get(sid) === "browser",
       );
 
       let forwardedToBrowser = false;
@@ -4074,7 +3722,7 @@ export class MessageServer extends EventEmitter {
       if (browserClients.length > 0) {
         const message = JSON.stringify({
           type: "commands",
-          commands: [command]
+          commands: [command],
         });
 
         // Forward to exactly one browser extension to avoid duplicate Fiverr sends
@@ -4083,33 +3731,18 @@ export class MessageServer extends EventEmitter {
         try {
           browserWs.send(message);
           forwardedToBrowser = true;
-
-
-
         } catch (error) {
-
-
-
           // Fall back to other browser clients if the first one failed
           for (let i = 1; i < browserClients.length; i += 1) {
             try {
               browserClients[i][1].send(message);
               forwardedToBrowser = true;
 
-
-
               break;
-            } catch (fallbackError) {
-
-
-
-            }
+            } catch (fallbackError) {}
           }
         }
       } else {
-
-
-
         this.pendingSendMessage = command;
       }
 
@@ -4123,8 +3756,8 @@ export class MessageServer extends EventEmitter {
             autoReply: command.autoReply,
             success: false,
             error:
-            "Browser extension is not connected to the server, so nothing could be typed into Fiverr. Open Fiverr in Chrome and activate the extension."
-          }
+              "Browser extension is not connected to the server, so nothing could be typed into Fiverr. Open Fiverr in Chrome and activate the extension.",
+          },
         });
       }
 
@@ -4132,10 +3765,10 @@ export class MessageServer extends EventEmitter {
         JSON.stringify({
           type: "ack",
           status: forwardedToBrowser ? "success" : "error",
-          message: forwardedToBrowser ?
-          "Send message command sent to browser extension" :
-          "Browser extension is not connected; message was queued"
-        })
+          message: forwardedToBrowser
+            ? "Send message command sent to browser extension"
+            : "Browser extension is not connected; message was queued",
+        }),
       );
     } else if (msgType === "fetch_client_details") {
       const username = data.username;
@@ -4144,15 +3777,11 @@ export class MessageServer extends EventEmitter {
           JSON.stringify({
             type: "ack",
             status: "error",
-            message: "Username is required for fetch_client_details"
-          })
+            message: "Username is required for fetch_client_details",
+          }),
         );
         return;
       }
-
-
-
-
 
       if (this.connectedClients.size === 0) {
         ws.send(
@@ -4160,8 +3789,8 @@ export class MessageServer extends EventEmitter {
             type: "ack",
             status: "error",
             message:
-            "Browser extension is not connected. Please open a Fiverr tab and ensure the extension is enabled."
-          })
+              "Browser extension is not connected. Please open a Fiverr tab and ensure the extension is enabled.",
+          }),
         );
         return;
       }
@@ -4169,16 +3798,13 @@ export class MessageServer extends EventEmitter {
       try {
         const profileUrl = `https://www.fiverr.com/${username}`;
 
-
-
-
         if (!this.navigateToUrl(profileUrl)) {
           ws.send(
             JSON.stringify({
               type: "ack",
               status: "error",
-              message: "Failed to send navigate command to browser extension"
-            })
+              message: "Failed to send navigate command to browser extension",
+            }),
           );
           return;
         }
@@ -4187,29 +3813,22 @@ export class MessageServer extends EventEmitter {
           JSON.stringify({
             type: "ack",
             status: "success",
-            message: `Navigating to ${username}'s profile. Extraction will start shortly...`
-          })
+            message: `Navigating to ${username}'s profile. Extraction will start shortly...`,
+          }),
         );
 
         // Wait longer for page to fully load (8 seconds) then trigger extraction
         // The content script will also wait for page load, so this gives enough time
         setTimeout(() => {
-
-
-
           this.triggerClientExtraction();
         }, 8000);
       } catch (error) {
-
-
-
-
         ws.send(
           JSON.stringify({
             type: "ack",
             status: "error",
-            message: `Error fetching client details: ${error.message}`
-          })
+            message: `Error fetching client details: ${error.message}`,
+          }),
         );
       }
     } else if (msgType === "command_status") {
@@ -4218,42 +3837,12 @@ export class MessageServer extends EventEmitter {
       const message = data.message || "";
       const error = data.error;
 
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
       ws.send(
         JSON.stringify({
           type: "ack",
           status: "success",
-          message: "Command status received"
-        })
+          message: "Command status received",
+        }),
       );
     } else if (msgType === "navigate") {
       const url = data.url;
@@ -4263,101 +3852,73 @@ export class MessageServer extends EventEmitter {
           JSON.stringify({
             type: "ack",
             status: "error",
-            message: "URL is required for navigate command"
-          })
+            message: "URL is required for navigate command",
+          }),
         );
         return;
       }
 
-
-
-
-
       const command = {
         type: "navigate",
-        url: url
+        url: url,
       };
 
       // Forward to browser extension clients
       const browserClients = Array.from(this.connectedClients.entries()).filter(
-        ([sid]) => this.clientTypes.get(sid) === "browser"
+        ([sid]) => this.clientTypes.get(sid) === "browser",
       );
 
       if (browserClients.length > 0) {
         const message = JSON.stringify({
           type: "commands",
-          commands: [command]
+          commands: [command],
         });
 
         for (const [, browserWs] of browserClients) {
           try {
             browserWs.send(message);
-
-
-
-          } catch (error) {
-
-
-
-          }
+          } catch (error) {}
         }
       } else {
-
-
-
       }
 
       ws.send(
         JSON.stringify({
           type: "ack",
           status: "success",
-          message: `Navigate command sent: ${url}`
-        })
+          message: `Navigate command sent: ${url}`,
+        }),
       );
     } else if (msgType === "reload") {
-
-
-
-
       const command = {
-        type: "reload"
+        type: "reload",
       };
 
       // Forward to browser extension clients
       const browserClients = Array.from(this.connectedClients.entries()).filter(
-        ([sid]) => this.clientTypes.get(sid) === "browser"
+        ([sid]) => this.clientTypes.get(sid) === "browser",
       );
 
       if (browserClients.length > 0) {
         const message = JSON.stringify({
           type: "commands",
-          commands: [command]
+          commands: [command],
         });
 
         for (const [, browserWs] of browserClients) {
           try {
             browserWs.send(message);
-
-
-
-          } catch (error) {
-
-
-
-          }
+          } catch (error) {}
         }
       } else {
-
-
-
       }
 
       ws.send(
         JSON.stringify({
           type: "ack",
           status: "success",
-          message: "Reload command sent to browser extension"
-        })
+          message: "Reload command sent to browser extension",
+        }),
       );
     } else if (msgType === "register_push_token") {
       const pushToken = data.pushToken || data.push_token;
@@ -4367,30 +3928,24 @@ export class MessageServer extends EventEmitter {
           token: pushToken,
           sessionId,
           userId,
-          registeredAt: Date.now()
+          registeredAt: Date.now(),
         });
         this.sessionPushTokens.set(sessionId, pushToken);
-
-
-
 
         ws.send(
           JSON.stringify({
             type: "ack",
             status: "success",
-            message: "Push token registered"
-          })
+            message: "Push token registered",
+          }),
         );
       } else {
-
-
-
         ws.send(
           JSON.stringify({
             type: "ack",
             status: "error",
-            message: "Invalid push token registration"
-          })
+            message: "Invalid push token registration",
+          }),
         );
       }
     } else if (msgType === "register_web_push") {
@@ -4406,28 +3961,28 @@ export class MessageServer extends EventEmitter {
             expirationTime: subscription.expirationTime || null,
             keys: {
               p256dh: subscription.keys.p256dh,
-              auth: subscription.keys.auth
-            }
+              auth: subscription.keys.auth,
+            },
           },
           userId,
           sessionId,
-          registeredAt: Date.now()
+          registeredAt: Date.now(),
         });
 
         ws.send(
           JSON.stringify({
             type: "ack",
             status: "success",
-            message: "Web push subscription registered"
-          })
+            message: "Web push subscription registered",
+          }),
         );
       } else {
         ws.send(
           JSON.stringify({
             type: "ack",
             status: "error",
-            message: "Invalid web push subscription"
-          })
+            message: "Invalid web push subscription",
+          }),
         );
       }
     } else if (msgType === "test_notification") {
@@ -4439,13 +3994,13 @@ export class MessageServer extends EventEmitter {
         conversationId: testData.conversationId || "test_" + Date.now(),
         username: testData.username || "testuser",
         clientUsername: testData.username || "testuser",
-        isTest: true
+        isTest: true,
       };
 
       // Broadcast test notification to Expo clients
       this.broadcastToExpoClients({
         type: "new_message_detected",
-        data: testPayload
+        data: testPayload,
       });
 
       // Also deliver remote push (native + web PWA)
@@ -4455,11 +4010,10 @@ export class MessageServer extends EventEmitter {
         JSON.stringify({
           type: "ack",
           status: "success",
-          message: "Test notification sent"
-        })
+          message: "Test notification sent",
+        }),
       );
     } else {
-
     }
   }
 
@@ -4470,8 +4024,8 @@ export class MessageServer extends EventEmitter {
     // Snapshot data
     const currentUser = ws._user || null;
     const canShowAll =
-    currentUser &&
-    this.normalizeRole(currentUser.role, currentUser) === "admin";
+      currentUser &&
+      this.normalizeRole(currentUser.role, currentUser) === "admin";
 
     // Hydrate + send the client list BEFORE the heavy Mongo message scan so the
     // web app can render the sidebar in one RTT after connect.
@@ -4486,7 +4040,7 @@ export class MessageServer extends EventEmitter {
     if (this.storedClientList) {
       snapshotClientList = await this.filterClientListForUser(
         currentUser,
-        JSON.parse(JSON.stringify(this.storedClientList))
+        JSON.parse(JSON.stringify(this.storedClientList)),
       );
     }
 
@@ -4503,15 +4057,15 @@ export class MessageServer extends EventEmitter {
       }
     }
 
-    const snapshotSellerProfile = this.sellerProfile ?
-    JSON.parse(JSON.stringify(this.sellerProfile)) :
-    null;
+    const snapshotSellerProfile = this.sellerProfile
+      ? JSON.parse(JSON.stringify(this.sellerProfile))
+      : null;
     const online = this.getOnlineUsernames();
     const snapshotSellerProfiles = Array.from(this.sellerProfiles.values()).map(
       (p) => ({
         ...JSON.parse(JSON.stringify(p)),
-        online: online.has(p.username)
-      })
+        online: online.has(p.username),
+      }),
     );
 
     try {
@@ -4519,18 +4073,18 @@ export class MessageServer extends EventEmitter {
         ws.send(
           JSON.stringify({
             type: "client_list_data",
-            data: snapshotClientList
-          })
+            data: snapshotClientList,
+          }),
         );
       }
 
       if (snapshotSellerProfile) {
         const currentWithOnline = {
           ...snapshotSellerProfile,
-          online: online.has(snapshotSellerProfile.username)
+          online: online.has(snapshotSellerProfile.username),
         };
         ws.send(
-          JSON.stringify({ type: "seller_profile", data: currentWithOnline })
+          JSON.stringify({ type: "seller_profile", data: currentWithOnline }),
         );
       }
 
@@ -4538,8 +4092,8 @@ export class MessageServer extends EventEmitter {
         ws.send(
           JSON.stringify({
             type: "seller_profiles",
-            data: snapshotSellerProfiles
-          })
+            data: snapshotSellerProfiles,
+          }),
         );
       }
 
@@ -4549,23 +4103,23 @@ export class MessageServer extends EventEmitter {
 
       // Messages are slower; send after clients so the UI is already usable.
       const snapshotMessagesFromMemory =
-      this.storedMessageDataByConversation.size > 0 ?
-      Array.from(this.storedMessageDataByConversation.values()).map((payload) =>
-      JSON.parse(JSON.stringify(payload))
-      ) :
-      this.storedMessageData && canShowAll ?
-      [JSON.parse(JSON.stringify(this.storedMessageData))] :
-      [];
+        this.storedMessageDataByConversation.size > 0
+          ? Array.from(this.storedMessageDataByConversation.values()).map(
+              (payload) => JSON.parse(JSON.stringify(payload)),
+            )
+          : this.storedMessageData && canShowAll
+            ? [JSON.parse(JSON.stringify(this.storedMessageData))]
+            : [];
       const persistedMessagePayloads = await this.loadMessagesFromMongo();
       let messagePayloads = this.mergeMessagePayloadSources(
         persistedMessagePayloads,
-        snapshotMessagesFromMemory
+        snapshotMessagesFromMemory,
       );
 
       if (!canShowAll) {
         messagePayloads = await this.filterMessagePayloadsForUser(
           currentUser,
-          messagePayloads
+          messagePayloads,
         );
       }
 
@@ -4577,10 +4131,10 @@ export class MessageServer extends EventEmitter {
       let snapshotActivations = this.storedClientActivations.slice(-10);
       if (!canShowAll) {
         snapshotNewMessages = snapshotNewMessages.filter((newMsg) =>
-        this.payloadMatchesAssignedIds(newMsg, assignedIds)
+          this.payloadMatchesAssignedIds(newMsg, assignedIds),
         );
         snapshotActivations = snapshotActivations.filter((username) =>
-        this.payloadMatchesAssignedIds({ username }, assignedIds)
+          this.payloadMatchesAssignedIds({ username }, assignedIds),
         );
       }
 
@@ -4588,14 +4142,14 @@ export class MessageServer extends EventEmitter {
         ws.send(
           JSON.stringify({
             type: "new_message_detected",
-            data: { ...newMsg, historical: true }
-          })
+            data: { ...newMsg, historical: true },
+          }),
         );
       }
 
       for (const username of snapshotActivations) {
         ws.send(
-          JSON.stringify({ type: "client_activated", data: { username } })
+          JSON.stringify({ type: "client_activated", data: { username } }),
         );
       }
 
@@ -4603,53 +4157,47 @@ export class MessageServer extends EventEmitter {
         JSON.stringify({
           type: "sync_complete",
           status: "ok",
-          message: "All stored data sent"
-        })
+          message: "All stored data sent",
+        }),
       );
-    } catch (error) {
-
-
-
-    }
+    } catch (error) {}
   }
 
   /**
    * Ask connected browser extensions to extract messages after inbox has time to load.
    */
   scheduleBrowserMessageExtraction(target, delaysMs = [4000, 10000, 20000]) {
-    const normalized = String(target || "").
-    trim().
-    replace(/^@/, "").
-    replace(
-      /^(user|client|conversation|conv|seller|profile|inbox|chat)[_:-]?/i,
-      ""
-    ).
-    toLowerCase();
+    const normalized = String(target || "")
+      .trim()
+      .replace(/^@/, "")
+      .replace(
+        /^(user|client|conversation|conv|seller|profile|inbox|chat)[_:-]?/i,
+        "",
+      )
+      .toLowerCase();
 
     if (!normalized) {
       return;
     }
 
-    const existingTimeouts = this.scheduledExtractionByTarget.get(normalized) || [];
+    const existingTimeouts =
+      this.scheduledExtractionByTarget.get(normalized) || [];
     for (const timeoutId of existingTimeouts) {
       clearTimeout(timeoutId);
     }
 
     const generation =
-    (this.extractionGenerationByTarget.get(normalized) || 0) + 1;
+      (this.extractionGenerationByTarget.get(normalized) || 0) + 1;
     this.extractionGenerationByTarget.set(normalized, generation);
     this.latestExtractionTarget = normalized;
 
     const sendExtract = () => {
       if (this.extractionGenerationByTarget.get(normalized) !== generation) {
-
-
-
         return;
       }
 
       const browserClients = Array.from(this.connectedClients.entries()).filter(
-        ([sid]) => this.clientTypes.get(sid) === "browser"
+        ([sid]) => this.clientTypes.get(sid) === "browser",
       );
 
       if (browserClients.length === 0) {
@@ -4659,33 +4207,26 @@ export class MessageServer extends EventEmitter {
       const payload = JSON.stringify({
         type: "commands",
         commands: [
-        {
-          type: "trigger",
-          action: "extract_messages",
-          conversationId: normalized,
-          username: normalized
-        }]
-
+          {
+            type: "trigger",
+            action: "extract_messages",
+            conversationId: normalized,
+            username: normalized,
+          },
+        ],
       });
 
       for (const [, browserWs] of browserClients) {
         try {
           browserWs.send(payload);
-
-
-
-        } catch (error) {
-
-
-
-        }
+        } catch (error) {}
       }
     };
 
     const timeoutIds = delaysMs.map((delay) => setTimeout(sendExtract, delay));
     this.scheduledExtractionByTarget.set(normalized, timeoutIds);
     this.scheduledExtractionTimeouts = Array.from(
-      this.scheduledExtractionByTarget.values()
+      this.scheduledExtractionByTarget.values(),
     ).flat();
   }
 
@@ -4698,18 +4239,18 @@ export class MessageServer extends EventEmitter {
     if (this.clientTypes.get(sessionId) === "browser") {
       commands.push({
         type: "set_expo_presence",
-        expoConnected: this.isExpoConnected()
+        expoConnected: this.isExpoConnected(),
       });
       if (this.autoReplyConfig) {
         commands.push({
           type: "set_auto_reply_config",
-          config: this.autoReplyConfig
+          config: this.autoReplyConfig,
         });
       }
       if (this.tabReloadConfig) {
         commands.push({
           type: "set_tab_reload_config",
-          config: this.tabReloadConfig
+          config: this.tabReloadConfig,
         });
       }
       if (this.expoAppActivity) {
@@ -4717,8 +4258,8 @@ export class MessageServer extends EventEmitter {
           type: "set_expo_app_activity",
           active: this.expoAppActivity.active === true,
           selectedProfileUsername:
-          this.expoAppActivity.selectedProfileUsername || "",
-          at: Number(this.expoAppActivity.at) || Date.now()
+            this.expoAppActivity.selectedProfileUsername || "",
+          at: Number(this.expoAppActivity.at) || Date.now(),
         });
       }
     }
@@ -4726,7 +4267,7 @@ export class MessageServer extends EventEmitter {
     if (this.pendingTrigger) {
       commands.push({
         type: "trigger",
-        action: "extract_messages"
+        action: "extract_messages",
       });
       this.pendingTrigger = false;
     }
@@ -4734,7 +4275,7 @@ export class MessageServer extends EventEmitter {
     if (this.pendingClientTrigger) {
       commands.push({
         type: "trigger",
-        action: "extract_client_data"
+        action: "extract_client_data",
       });
       this.pendingClientTrigger = false;
     }
@@ -4742,7 +4283,7 @@ export class MessageServer extends EventEmitter {
     if (this.pendingClientListTrigger) {
       commands.push({
         type: "trigger",
-        action: "extract_client_list"
+        action: "extract_client_list",
       });
       this.pendingClientListTrigger = false;
     }
@@ -4751,18 +4292,15 @@ export class MessageServer extends EventEmitter {
       const pending = this.pendingSendMessage;
       this.pendingSendMessage = null;
       const pendingCommand =
-      typeof pending === "string" ?
-      { type: "send_message", message: pending } :
-      { ...pending, type: "send_message" };
+        typeof pending === "string"
+          ? { type: "send_message", message: pending }
+          : { ...pending, type: "send_message" };
 
       // Replaying without a recipient would deliver to whichever conversation
       // happens to be open in the browser, so drop it instead.
       if (pendingCommand.conversationId || pendingCommand.username) {
         commands.push(pendingCommand);
       } else {
-
-
-
       }
     }
 
@@ -4779,8 +4317,8 @@ export class MessageServer extends EventEmitter {
       ws.send(
         JSON.stringify({
           type: "commands",
-          commands: commands
-        })
+          commands: commands,
+        }),
       );
     }
   }
@@ -4802,7 +4340,7 @@ export class MessageServer extends EventEmitter {
 
       const user = ws._user || null;
       const canShowAll =
-      user && this.normalizeRole(user.role, user) === "admin";
+        user && this.normalizeRole(user.role, user) === "admin";
       let messageToSend = message;
 
       if (!canShowAll) {
@@ -4811,34 +4349,34 @@ export class MessageServer extends EventEmitter {
         if (message.type === "client_list_data") {
           const filteredList = await this.filterClientListForUser(
             user,
-            JSON.parse(JSON.stringify(message.data || {}))
+            JSON.parse(JSON.stringify(message.data || {})),
           );
           messageToSend = {
             type: "client_list_data",
-            data: filteredList
+            data: filteredList,
           };
         } else if (message.type === "message_data") {
           const filteredPayloads = await this.filterMessagePayloadsForUser(
             user,
-            [message.data || {}]
+            [message.data || {}],
           );
           if (filteredPayloads.length === 0) {
             continue;
           }
           messageToSend = {
             type: "message_data",
-            data: filteredPayloads[0]
+            data: filteredPayloads[0],
           };
         } else if (message.type === "client_activated") {
           // Do not broadcast client activated events globally to Expo clients.
           continue;
         } else if (
-        message.type === "client_data" ||
-        message.type === "new_message_detected")
-        {
+          message.type === "client_data" ||
+          message.type === "new_message_detected"
+        ) {
           if (
-          !this.payloadMatchesAssignedIds(message.data || {}, assignedIds))
-          {
+            !this.payloadMatchesAssignedIds(message.data || {}, assignedIds)
+          ) {
             continue;
           }
         }
@@ -4847,9 +4385,6 @@ export class MessageServer extends EventEmitter {
       try {
         ws.send(JSON.stringify(messageToSend));
       } catch (error) {
-
-
-
         disconnected.push(sessionId);
       }
     }
@@ -4878,7 +4413,7 @@ export class MessageServer extends EventEmitter {
 
     const message = JSON.stringify({
       type: "commands",
-      commands: [command]
+      commands: [command],
     });
 
     const disconnected = [];
@@ -4886,9 +4421,6 @@ export class MessageServer extends EventEmitter {
       try {
         ws.send(message);
       } catch (error) {
-
-
-
         disconnected.push(sessionId);
       }
     }
@@ -4918,8 +4450,6 @@ export class MessageServer extends EventEmitter {
       if (upgrade && upgrade.toLowerCase() === "websocket") {
         // WebSocketServer will handle this, but we can log it
 
-
-
         // Don't respond here - let WebSocketServer handle it
         return;
       }
@@ -4931,11 +4461,11 @@ export class MessageServer extends EventEmitter {
       res.setHeader("Access-Control-Allow-Origin", "*");
       res.setHeader(
         "Access-Control-Allow-Methods",
-        "GET, POST, PUT, DELETE, OPTIONS, HEAD"
+        "GET, POST, PUT, DELETE, OPTIONS, HEAD",
       );
       res.setHeader(
         "Access-Control-Allow-Headers",
-        "Content-Type, Authorization, X-Requested-With"
+        "Content-Type, Authorization, X-Requested-With",
       );
       res.setHeader("Access-Control-Max-Age", "86400");
 
@@ -4950,11 +4480,11 @@ export class MessageServer extends EventEmitter {
         if (!publicKey) {
           const body = JSON.stringify({
             error:
-              "VAPID keys are not configured. Set VAPID_PUBLIC_KEY and VAPID_PRIVATE_KEY."
+              "VAPID keys are not configured. Set VAPID_PUBLIC_KEY and VAPID_PRIVATE_KEY.",
           });
           res.writeHead(503, {
             "Content-Type": "application/json",
-            "Content-Length": Buffer.byteLength(body)
+            "Content-Length": Buffer.byteLength(body),
           });
           res.end(body);
           return;
@@ -4963,7 +4493,7 @@ export class MessageServer extends EventEmitter {
         res.writeHead(200, {
           "Content-Type": "application/json",
           "Content-Length": Buffer.byteLength(body),
-          "Cache-Control": "no-store"
+          "Cache-Control": "no-store",
         });
         res.end(body);
         return;
@@ -4971,22 +4501,22 @@ export class MessageServer extends EventEmitter {
 
       // Health check endpoints
       if (
-      pathname === "/" ||
-      pathname === "/health" ||
-      pathname === "/healthz")
-      {
+        pathname === "/" ||
+        pathname === "/health" ||
+        pathname === "/healthz"
+      ) {
         const isRender = process.env.RENDER === "true";
         let wsUrl;
 
         if (isRender) {
           const renderServiceUrl =
-          process.env.RENDER_EXTERNAL_URL ||
-          process.env.RENDER_SERVICE_URL ||
-          "https://fiverr-agent-03vs.onrender.com";
-          wsUrl = renderServiceUrl.
-          replace("https://", "wss://").
-          replace("http://", "ws://").
-          replace(/\/$/, "");
+            process.env.RENDER_EXTERNAL_URL ||
+            process.env.RENDER_SERVICE_URL ||
+            "https://fiverr-agent-03vs.onrender.com";
+          wsUrl = renderServiceUrl
+            .replace("https://", "wss://")
+            .replace("http://", "ws://")
+            .replace(/\/$/, "");
         } else {
           wsUrl = `ws://127.0.0.1:${this.port}`;
         }
@@ -4994,12 +4524,12 @@ export class MessageServer extends EventEmitter {
         const body = JSON.stringify({
           status: "ok",
           message: "MessageServer is running",
-          ws: wsUrl
+          ws: wsUrl,
         });
 
         res.writeHead(200, {
           "Content-Type": "application/json",
-          "Content-Length": Buffer.byteLength(body)
+          "Content-Length": Buffer.byteLength(body),
         });
         res.end(body);
         return;
@@ -5011,9 +4541,8 @@ export class MessageServer extends EventEmitter {
             const body = await this.parseJsonBody(req);
             await this.handleRegister(req, res, body);
           } catch (error) {
-
             await this.sendJsonResponse(res, 500, {
-              error: "Internal server error"
+              error: "Internal server error",
             });
           }
         })();
@@ -5026,9 +4555,8 @@ export class MessageServer extends EventEmitter {
             const body = await this.parseJsonBody(req);
             await this.handleLogin(req, res, body);
           } catch (error) {
-
             await this.sendJsonResponse(res, 500, {
-              error: "Internal server error"
+              error: "Internal server error",
             });
           }
         })();
@@ -5039,15 +4567,14 @@ export class MessageServer extends EventEmitter {
         (async () => {
           try {
             const authHeader = req.headers["authorization"] || "";
-            const token = authHeader.
-            toString().
-            replace(/^Bearer\s+/i, "").
-            trim();
+            const token = authHeader
+              .toString()
+              .replace(/^Bearer\s+/i, "")
+              .trim();
             await this.handleMe(req, res, token);
           } catch (error) {
-
             await this.sendJsonResponse(res, 500, {
-              error: "Internal server error"
+              error: "Internal server error",
             });
           }
         })();
@@ -5058,15 +4585,14 @@ export class MessageServer extends EventEmitter {
         (async () => {
           try {
             const authHeader = req.headers["authorization"] || "";
-            const token = authHeader.
-            toString().
-            replace(/^Bearer\s+/i, "").
-            trim();
+            const token = authHeader
+              .toString()
+              .replace(/^Bearer\s+/i, "")
+              .trim();
             await this.handleLogout(req, res, token);
           } catch (error) {
-
             await this.sendJsonResponse(res, 500, {
-              error: "Internal server error"
+              error: "Internal server error",
             });
           }
         })();
@@ -5077,18 +4603,14 @@ export class MessageServer extends EventEmitter {
         (async () => {
           try {
             const authHeader = req.headers["authorization"] || "";
-            const token = authHeader.
-            toString().
-            replace(/^Bearer\s+/i, "").
-            trim();
+            const token = authHeader
+              .toString()
+              .replace(/^Bearer\s+/i, "")
+              .trim();
             await this.handleMyAssignments(req, res, token);
           } catch (error) {
-
-
-
-
             await this.sendJsonResponse(res, 500, {
-              error: "Internal server error"
+              error: "Internal server error",
             });
           }
         })();
@@ -5099,18 +4621,14 @@ export class MessageServer extends EventEmitter {
         (async () => {
           try {
             const authHeader = req.headers["authorization"] || "";
-            const token = authHeader.
-            toString().
-            replace(/^Bearer\s+/i, "").
-            trim();
+            const token = authHeader
+              .toString()
+              .replace(/^Bearer\s+/i, "")
+              .trim();
             await this.handleAdminClients(req, res, token);
           } catch (error) {
-
-
-
-
             await this.sendJsonResponse(res, 500, {
-              error: "Internal server error"
+              error: "Internal server error",
             });
           }
         })();
@@ -5121,15 +4639,14 @@ export class MessageServer extends EventEmitter {
         (async () => {
           try {
             const authHeader = req.headers["authorization"] || "";
-            const token = authHeader.
-            toString().
-            replace(/^Bearer\s+/i, "").
-            trim();
+            const token = authHeader
+              .toString()
+              .replace(/^Bearer\s+/i, "")
+              .trim();
             await this.handleClients(req, res, token);
           } catch (error) {
-
             await this.sendJsonResponse(res, 500, {
-              error: "Internal server error"
+              error: "Internal server error",
             });
           }
         })();
@@ -5140,24 +4657,20 @@ export class MessageServer extends EventEmitter {
         (async () => {
           try {
             const authHeader = req.headers["authorization"] || "";
-            const token = authHeader.
-            toString().
-            replace(/^Bearer\s+/i, "").
-            trim();
+            const token = authHeader
+              .toString()
+              .replace(/^Bearer\s+/i, "")
+              .trim();
             const clientId = pathname.split("/").filter(Boolean).pop();
             await this.handleAdminClientById(
               req,
               res,
               token,
-              decodeURIComponent(clientId)
+              decodeURIComponent(clientId),
             );
           } catch (error) {
-
-
-
-
             await this.sendJsonResponse(res, 500, {
-              error: "Internal server error"
+              error: "Internal server error",
             });
           }
         })();
@@ -5168,18 +4681,14 @@ export class MessageServer extends EventEmitter {
         (async () => {
           try {
             const authHeader = req.headers["authorization"] || "";
-            const token = authHeader.
-            toString().
-            replace(/^Bearer\s+/i, "").
-            trim();
+            const token = authHeader
+              .toString()
+              .replace(/^Bearer\s+/i, "")
+              .trim();
             await this.handleAdminMessages(req, res, token);
           } catch (error) {
-
-
-
-
             await this.sendJsonResponse(res, 500, {
-              error: "Internal server error"
+              error: "Internal server error",
             });
           }
         })();
@@ -5190,24 +4699,20 @@ export class MessageServer extends EventEmitter {
         (async () => {
           try {
             const authHeader = req.headers["authorization"] || "";
-            const token = authHeader.
-            toString().
-            replace(/^Bearer\s+/i, "").
-            trim();
+            const token = authHeader
+              .toString()
+              .replace(/^Bearer\s+/i, "")
+              .trim();
             const messageId = pathname.split("/").filter(Boolean).pop();
             await this.handleAdminMessageById(
               req,
               res,
               token,
-              decodeURIComponent(messageId)
+              decodeURIComponent(messageId),
             );
           } catch (error) {
-
-
-
-
             await this.sendJsonResponse(res, 500, {
-              error: "Internal server error"
+              error: "Internal server error",
             });
           }
         })();
@@ -5218,15 +4723,14 @@ export class MessageServer extends EventEmitter {
         (async () => {
           try {
             const authHeader = req.headers["authorization"] || "";
-            const token = authHeader.
-            toString().
-            replace(/^Bearer\s+/i, "").
-            trim();
+            const token = authHeader
+              .toString()
+              .replace(/^Bearer\s+/i, "")
+              .trim();
             await this.handleAdminUsers(req, res, token);
           } catch (error) {
-
             await this.sendJsonResponse(res, 500, {
-              error: "Internal server error"
+              error: "Internal server error",
             });
           }
         })();
@@ -5237,18 +4741,14 @@ export class MessageServer extends EventEmitter {
         (async () => {
           try {
             const authHeader = req.headers["authorization"] || "";
-            const token = authHeader.
-            toString().
-            replace(/^Bearer\s+/i, "").
-            trim();
+            const token = authHeader
+              .toString()
+              .replace(/^Bearer\s+/i, "")
+              .trim();
             await this.handleAdminAssignments(req, res, token);
           } catch (error) {
-
-
-
-
             await this.sendJsonResponse(res, 500, {
-              error: "Internal server error"
+              error: "Internal server error",
             });
           }
         })();
@@ -5266,9 +4766,6 @@ export class MessageServer extends EventEmitter {
    */
   start() {
     if (this.running) {
-
-
-
       return;
     }
 
@@ -5281,39 +4778,19 @@ export class MessageServer extends EventEmitter {
     this.wss = new WebSocketServer({
       server: this.httpServer,
       perMessageDeflate: false,
-      clientTracking: true
+      clientTracking: true,
     });
 
     this.wss.on("connection", (ws, req) => {
       const clientIp = req.socket.remoteAddress || "unknown";
       const userAgent = req.headers["user-agent"] || "unknown";
 
-
-
-
-
-
-
       this.handleWebSocketConnection(ws, req);
     });
 
-    this.wss.on("error", (error) => {
+    this.wss.on("error", (error) => {});
 
-
-
-
-    });
-
-    this.wss.on("headers", (headers, req) => {
-
-
-
-
-
-
-
-
-    });
+    this.wss.on("headers", (headers, req) => {});
 
     // Detect zombie sockets left behind when Chrome MV3 service workers die
     // without a clean WebSocket close (common after long idle).
@@ -5329,15 +4806,12 @@ export class MessageServer extends EventEmitter {
           return;
         }
         if (ws._isAlive === false) {
-
-
-
           try {
             ws.terminate();
           } catch (_) {
-
             // Ignore
-          }return;
+          }
+          return;
         }
         ws._isAlive = false;
         try {
@@ -5346,42 +4820,18 @@ export class MessageServer extends EventEmitter {
           try {
             ws.terminate();
           } catch (__) {
-
             // Ignore
-          }}
+          }
+        }
       });
     }, 30000);
 
     // Start listening
-    this.httpServer.listen(this.port, "0.0.0.0", () => {
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-    });
+    this.httpServer.listen(this.port, "0.0.0.0", () => {});
 
     this.httpServer.on("error", (error) => {
       if (error.code === "EADDRINUSE") {
-
-
-
-
-
-
       } else {
-
-
-
       }
       this.running = false;
     });
@@ -5391,12 +4841,7 @@ export class MessageServer extends EventEmitter {
    * Stop the server
    */
   stop() {
-
-
-
-
     if (!this.running && !this.httpServer && !this.wss) {
-
       return;
     }
 
@@ -5412,9 +4857,9 @@ export class MessageServer extends EventEmitter {
       try {
         ws.close();
       } catch (error) {
-
         // Ignore
-      }}
+      }
+    }
 
     this.connectedClients.clear();
     this.clientSessions.clear();
@@ -5431,17 +4876,13 @@ export class MessageServer extends EventEmitter {
 
     // Close WebSocket server
     if (this.wss) {
-      this.wss.close(() => {
-
-      });
+      this.wss.close(() => {});
       this.wss = null;
     }
 
     // Close HTTP server
     if (this.httpServer) {
-      this.httpServer.close(() => {
-
-      });
+      this.httpServer.close(() => {});
       this.httpServer = null;
     }
 
@@ -5462,8 +4903,6 @@ export class MessageServer extends EventEmitter {
     this.mongoClientsCollection = null;
     this.mongoMessagesCollection = null;
     this.mongoAssignmentsCollection = null;
-
-
   }
 
   /**
@@ -5477,25 +4916,19 @@ export class MessageServer extends EventEmitter {
    * Trigger message extraction
    */
   triggerExtraction() {
-
     if (!this.running) {
-
       return false;
     }
 
     const command = {
       type: "trigger",
-      action: "extract_messages"
+      action: "extract_messages",
     };
 
     if (this.connectedClients.size > 0) {
       this.broadcastCommand(command);
-
     } else {
       this.pendingTrigger = true;
-
-
-
     }
 
     return true;
@@ -5505,27 +4938,19 @@ export class MessageServer extends EventEmitter {
    * Trigger client data extraction
    */
   triggerClientExtraction() {
-
     if (!this.running) {
-
       return false;
     }
 
     const command = {
       type: "trigger",
-      action: "extract_client_data"
+      action: "extract_client_data",
     };
 
     if (this.connectedClients.size > 0) {
       this.broadcastCommand(command);
-
-
-
     } else {
       this.pendingClientTrigger = true;
-
-
-
     }
 
     return true;
@@ -5535,29 +4960,19 @@ export class MessageServer extends EventEmitter {
    * Trigger client list extraction
    */
   triggerClientListExtraction() {
-
-
-
     if (!this.running) {
-
       return false;
     }
 
     const command = {
       type: "trigger",
-      action: "extract_client_list"
+      action: "extract_client_list",
     };
 
     if (this.connectedClients.size > 0) {
       this.broadcastCommand(command);
-
-
-
     } else {
       this.pendingClientListTrigger = true;
-
-
-
     }
 
     return true;
@@ -5567,18 +4982,11 @@ export class MessageServer extends EventEmitter {
    * Send message to client
    */
   sendMessageToClient(messageText, conversationId = null) {
-
-
-
     if (!this.running) {
-
       return false;
     }
 
     if (!conversationId) {
-
-
-
       return false;
     }
 
@@ -5586,19 +4994,13 @@ export class MessageServer extends EventEmitter {
       type: "send_message",
       message: messageText,
       conversationId,
-      username: conversationId
+      username: conversationId,
     };
 
     if (this.connectedClients.size > 0) {
       this.broadcastCommand(command);
-
-
-
     } else {
       this.pendingSendMessage = command;
-
-
-
     }
 
     return true;
@@ -5609,61 +5011,42 @@ export class MessageServer extends EventEmitter {
    */
   clickClientInFiverr(username = null, useFirstClient = false) {
     if (useFirstClient) {
-
-
-
       const command = { type: "clickFirstClient" };
 
       if (!this.running) {
-
         return false;
       }
 
       if (this.connectedClients.size > 0) {
         this.broadcastCommand(command);
 
-
-
         return true;
       } else {
         this.pendingClickCommands.push(command);
 
-
-
         return false;
       }
     } else {
-
-
-
       if (!username) {
-
-
-
         return false;
       }
 
       const command = {
         type: "click_client",
         username: username,
-        useFirstClient: false
+        useFirstClient: false,
       };
 
       if (!this.running) {
-
         return false;
       }
 
       if (this.connectedClients.size > 0) {
         this.broadcastCommand(command);
 
-
-
         return true;
       } else {
         this.pendingClickCommands.push(command);
-
-
 
         return false;
       }
@@ -5674,26 +5057,18 @@ export class MessageServer extends EventEmitter {
    * Navigate to URL
    */
   navigateToUrl(url) {
-
-
-
     if (!this.running) {
-
       return false;
     }
 
     const command = {
       type: "navigate",
-      url: url
+      url: url,
     };
 
     if (this.connectedClients.size > 0) {
       this.broadcastCommand(command);
-
     } else {
-
-
-
     }
 
     return true;
@@ -5706,7 +5081,7 @@ export class MessageServer extends EventEmitter {
     return {
       size: this.connectedClients.size,
       has: () => this.connectedClients.size > 0,
-      [Symbol.iterator]: () => this.connectedClients.keys()
+      [Symbol.iterator]: () => this.connectedClients.keys(),
     };
   }
 }
