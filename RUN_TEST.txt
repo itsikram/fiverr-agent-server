@@ -1,0 +1,143 @@
+================================================================================
+  ACTIVITY TRACKING SYSTEM - E2E TEST SUITE
+================================================================================
+
+QUICK START:
+
+1. Terminal 1 - Start the server:
+   cd E:\fiverr-server
+   npm start
+
+2. Terminal 2 - Run the test:
+   cd E:\fiverr-server
+   npm run test:activities
+
+   OR for custom port:
+   node test-activities-e2e.js --port 9000
+
+================================================================================
+WHAT THE TEST DOES:
+================================================================================
+
+1. Checks MongoDB connection and collection existence
+2. Verifies server health (/health endpoint)
+3. Creates a test user and gets authentication token
+4. POSTs activity data to /activities endpoint
+5. GETs activities from /admin/activities endpoint
+6. Validates that data is stored in MongoDB
+
+================================================================================
+EXPECTED RESULTS:
+================================================================================
+
+If everything is implemented correctly:
+  ✓ MongoDB Connection
+  ✓ Server Health
+  ✓ User Creation/Login
+  ✓ POST /activities
+  ✓ GET /admin/activities
+  ✓ Data Validation
+
+  Overall: 6/6 tests passed
+
+================================================================================
+IF TESTS FAIL:
+================================================================================
+
+Common Issues:
+
+1. Server not running:
+   Error: "Is the server running on port 8765?"
+   Fix: Run "npm start" in Terminal 1
+
+2. MongoDB not accessible:
+   Error: "MongoDB connection failed"
+   Fix: Check .env file for MONGODB_URI
+   Test: mongosh "mongodb+srv://testmailbd2026_db_user:BgAEQdfgnmdSuZKp@cluster0.gwqnbsp.mongodb.net/fiverr_agent"
+
+3. Endpoints not found (404):
+   Error: "/activities endpoint not found" or "/admin/activities endpoint not found"
+   Fix: Read TEST_ACTIVITIES_README.md for implementation guide
+   These endpoints need to be added to MessageServer.js
+
+================================================================================
+HELPER COMMANDS:
+================================================================================
+
+Check if endpoints are implemented:
+  npm run check:endpoints
+
+Run test with verbose output:
+  node test-activities-e2e.js 2>&1 | tee test-output.log
+
+Kill server on port 8765 (Windows):
+  taskkill /F /FI "COMMAND_LINE eq*node*"
+
+Check what's listening on 8765:
+  netstat -an | findstr :8765
+
+Query MongoDB directly:
+  mongosh "mongodb+srv://testmailbd2026_db_user:BgAEQdfgnmdSuZKp@cluster0.gwqnbsp.mongodb.net/fiverr_agent"
+  use fiverr_agent
+  db.user_activities.find().sort({createdAt: -1}).limit(5)
+
+================================================================================
+TEST OUTPUT LEGEND:
+================================================================================
+
+[INFO]  - General information about what's happening
+[✓]    - Test passed (green checkmark)
+[✗]    - Test failed (red X)
+[!]    - Warning (yellow exclamation)
+
+Color-coded output:
+  Green text  = Success
+  Red text    = Error/Failure
+  Yellow text = Warning
+  Cyan text   = Section headers
+  Blue text   = Information
+
+================================================================================
+ENDPOINT REQUIREMENTS:
+================================================================================
+
+The test expects these endpoints to be implemented in MessageServer.js:
+
+POST /activities
+  - Accepts: Authorization header with Bearer token
+  - Body: { category, action, detail, metadata }
+  - Returns: 201 Created with activity object
+  - Logs activity to MongoDB user_activities collection
+
+GET /admin/activities
+  - Accepts: Authorization header with Bearer token (admin only)
+  - Query params: limit, userId, category, action, from, to
+  - Returns: 200 OK with { activities: [...] }
+  - Fetches activities from MongoDB user_activities collection
+
+See TEST_ACTIVITIES_README.md for implementation guide and code examples.
+
+================================================================================
+FILES INCLUDED:
+================================================================================
+
+- test-activities-e2e.js       Main test script
+- check-endpoints.js           Endpoint status checker
+- QUICKSTART.md                Quick start guide (2 minutes)
+- TEST_ACTIVITIES_README.md    Detailed testing guide
+- TESTING_GUIDE.md             Complete reference
+- RUN_TEST.txt                 This file
+- package.json (updated)       Added test scripts
+
+================================================================================
+NEXT STEPS:
+================================================================================
+
+1. If all tests pass → Activity tracking is working!
+2. If tests fail → Check error messages and troubleshooting section above
+3. If endpoints missing → Implement them following TEST_ACTIVITIES_README.md
+4. Monitor logs during development to ensure activities are being saved
+
+For detailed information, see TEST_ACTIVITIES_README.md
+
+================================================================================

@@ -3291,6 +3291,23 @@ export class MessageServer extends EventEmitter {
       );
     } else if (msgType === "ping") {
       ws.send(JSON.stringify({ type: "pong" }));
+    } else if (msgType === "updateActivatedTabUrl") {
+      this.currentActivatedFiverrUrl = data.url || null;
+
+      this.broadcastToExpoClients({
+        type: "updateActivatedTabUrl",
+        data: {
+          url: this.currentActivatedFiverrUrl,
+        },
+      });
+
+      ws.send(
+        JSON.stringify({
+          type: "ack",
+          status: "success",
+          message: "Activated Fiverr tab URL updated",
+        }),
+      );
     } else if (msgType === "request_all_data") {
       await this.sendStoredDataToExpo(ws);
     } else if (msgType === "request_client_list") {
@@ -4130,6 +4147,17 @@ export class MessageServer extends EventEmitter {
       for (const username of snapshotActivations) {
         ws.send(
           JSON.stringify({ type: "client_activated", data: { username } }),
+        );
+      }
+
+      if (this.currentActivatedFiverrUrl) {
+        ws.send(
+          JSON.stringify({
+            type: "updateActivatedTabUrl",
+            data: {
+              url: this.currentActivatedFiverrUrl,
+            },
+          }),
         );
       }
 

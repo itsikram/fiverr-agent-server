@@ -6,7 +6,9 @@
   "type": "module",
   "scripts": {
     "start": "node server.js",
-    "dev": "node server.js"
+    "dev": "node server.js",
+    "test:activities": "node test-activities-e2e.js",
+    "check:endpoints": "node check-endpoints.js"
   },
   "keywords": [
     "websocket",
