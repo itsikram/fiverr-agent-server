@@ -3883,6 +3883,101 @@ export class MessageServer extends EventEmitter {
         }),
       );
       return;
+    } else if (msgType === "request_reload_status") {
+      // Request reload status from extension and send back to Expo app
+      const statusRequest = {
+        type: "request_reload_status",
+        requestedAt: new Date().toISOString(),
+      };
+
+      let statusReceived = false;
+      let reloadStatus = "idle";
+      let nextReloadAt = null;
+
+      // Forward request to connected browser extensions
+      for (const [sessionId, browserWs] of this.connectedClients.entries()) {
+        if (this.clientTypes.get(sessionId) !== "browser") continue;
+        try {
+          browserWs.send(
+            JSON.stringify({ type: "commands", commands: [statusRequest] }),
+          );
+          statusReceived = true;
+        } catch (error) {}
+      }
+
+      // Send back status to Expo app
+      ws.send(
+        JSON.stringify({
+          type: "reload_status_response",
+          status: reloadStatus,
+          nextReloadAt: nextReloadAt,
+          extension_connected: statusReceived,
+        }),
+      );
+      return;
+    } else if (msgType === "request_extension_status") {
+      // Check if any browser extensions are connected and report status to Expo app
+      const hasConnectedBrowserClient = Array.from(this.clientTypes.values()).some(
+        (clientType) => clientType === "browser"
+      );
+
+      // Send extension status to Expo app
+      try {
+        ws.send(
+          JSON.stringify({
+            type: "extension_status",
+            connected: hasConnectedBrowserClient,
+            timestamp: new Date().toISOString(),
+          }),
+        );
+      } catch (error) {
+        console.error("[MessageServer] Error sending extension status", error);
+      }
+      return;
+    } else if (msgType === "reload_status_update") {
+      // Receive reload status from extension and forward to Expo app
+      const status = data.status || "idle";
+      const nextReloadAt = data.nextReloadAt || null;
+
+      // Store status for future requests
+      this.tabReloadStatus = {
+        status,
+        nextReloadAt,
+        updatedAt: new Date().toISOString(),
+      };
+
+      // Forward to connected Expo apps with health check
+      const disconnected = [];
+      for (const [sessionId, expoWs] of this.connectedClients.entries()) {
+        if (this.clientTypes.get(sessionId) !== "expo") continue;
+        
+        // Check WebSocket health before sending
+        if (expoWs.readyState !== 1) { // 1 = OPEN
+          disconnected.push(sessionId);
+          continue;
+        }
+        
+        try {
+          expoWs.send(
+            JSON.stringify({
+              type: "reload_status_update",
+              status,
+              nextReloadAt,
+            }),
+          );
+        } catch (error) {
+          disconnected.push(sessionId);
+        }
+      }
+      
+      // Clean up dead connections
+      for (const sessionId of disconnected) {
+        this.connectedClients.delete(sessionId);
+        this.clientTypes.delete(sessionId);
+        this.sessionPushTokens.delete(sessionId);
+        this.browserProfileBySession.delete(sessionId);
+      }
+      return;
     } else if (msgType === "expo_app_activity") {
       const activity = data.data || {};
       this.expoAppActivity = {
@@ -3900,13 +3995,32 @@ export class MessageServer extends EventEmitter {
         at: this.expoAppActivity.at,
       };
 
+      // Forward to browser clients with health check
+      const disconnected = [];
       for (const [sessionId, browserWs] of this.connectedClients.entries()) {
         if (this.clientTypes.get(sessionId) !== "browser") continue;
+        
+        // Check WebSocket health before sending
+        if (browserWs.readyState !== 1) { // 1 = OPEN
+          disconnected.push(sessionId);
+          continue;
+        }
+        
         try {
           browserWs.send(
             JSON.stringify({ type: "commands", commands: [command] }),
           );
-        } catch (error) {}
+        } catch (error) {
+          disconnected.push(sessionId);
+        }
+      }
+      
+      // Clean up dead connections
+      for (const sessionId of disconnected) {
+        this.connectedClients.delete(sessionId);
+        this.clientTypes.delete(sessionId);
+        this.sessionPushTokens.delete(sessionId);
+        this.browserProfileBySession.delete(sessionId);
       }
       return;
     } else if (msgType === "send_message") {
