@@ -3978,6 +3978,77 @@ export class MessageServer extends EventEmitter {
         this.browserProfileBySession.delete(sessionId);
       }
       return;
+    } else if (msgType === "request_reload_daily_stats") {
+      // Ask the connected browser extension(s) to push fresh daily stats
+      // (reload counts, online/offline time) for the admin dashboard.
+      const statsRequest = {
+        type: "request_reload_daily_stats",
+        requestedAt: new Date().toISOString(),
+      };
+
+      for (const [sessionId, browserWs] of this.connectedClients.entries()) {
+        if (this.clientTypes.get(sessionId) !== "browser") continue;
+        try {
+          browserWs.send(
+            JSON.stringify({ type: "commands", commands: [statsRequest] }),
+          );
+        } catch (error) {}
+      }
+
+      // Immediately reply with the last known cached stats (if any) so the
+      // dashboard has something to render while the extension responds.
+      if (this.tabReloadDailyStats) {
+        try {
+          ws.send(
+            JSON.stringify({
+              type: "reload_daily_stats_update",
+              dailyStats: this.tabReloadDailyStats.dailyStats || {},
+            }),
+          );
+        } catch (error) {}
+      }
+      return;
+    } else if (msgType === "reload_daily_stats_update") {
+      // Receive daily reload/online-time stats from extension and forward
+      // to connected Expo apps for the admin dashboard.
+      const dailyStats =
+        data.dailyStats && typeof data.dailyStats === "object"
+          ? data.dailyStats
+          : {};
+
+      this.tabReloadDailyStats = {
+        dailyStats,
+        updatedAt: new Date().toISOString(),
+      };
+
+      const disconnectedStats = [];
+      for (const [sessionId, expoWs] of this.connectedClients.entries()) {
+        if (this.clientTypes.get(sessionId) !== "expo") continue;
+
+        if (expoWs.readyState !== 1) {
+          disconnectedStats.push(sessionId);
+          continue;
+        }
+
+        try {
+          expoWs.send(
+            JSON.stringify({
+              type: "reload_daily_stats_update",
+              dailyStats,
+            }),
+          );
+        } catch (error) {
+          disconnectedStats.push(sessionId);
+        }
+      }
+
+      for (const sessionId of disconnectedStats) {
+        this.connectedClients.delete(sessionId);
+        this.clientTypes.delete(sessionId);
+        this.sessionPushTokens.delete(sessionId);
+        this.browserProfileBySession.delete(sessionId);
+      }
+      return;
     } else if (msgType === "expo_app_activity") {
       const activity = data.data || {};
       this.expoAppActivity = {
