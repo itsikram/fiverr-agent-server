@@ -38,10 +38,7 @@ export class MessageServer extends EventEmitter {
       ).trim(),
     );
     const envDbName = (process.env.MONGODB_DB_NAME || "").trim();
-    this.mongoDbName =
-      envDbName ||
-      this.parseMongoDbNameFromUrl(this.mongodbUrl) ||
-      "fiverr_agent";
+    this.mongoDbName = envDbName || "fiverr_agent";
     this.mongoProfilesColl = (
       process.env.MONGODB_PROFILES_COLLECTION || "seller_profiles"
     ).trim();
@@ -128,7 +125,11 @@ export class MessageServer extends EventEmitter {
     this.mongoClientsCollection = null;
     this.mongoMessagesCollection = null;
     this.mongoAssignmentsCollection = null;
+    this.mongoActivitiesCollection = null;
     this.mongoDb = null;
+
+    // Active client access tracking (clientKey -> { userId, userName, sessionId, accessStarted })
+    this.activeClientAccess = new Map();
 
     // Lock for thread-safe operations
     this.lock = new Map(); // Simple lock using a flag
@@ -428,8 +429,26 @@ export class MessageServer extends EventEmitter {
       return null;
     }
 
-    this.mongoAssignmentsCollection = db.collection("user_client_assignments");
+    this.mongoAssignmentsCollection = db.collection("assignments");
     return this.mongoAssignmentsCollection;
+  }
+
+  async getMongoActivitiesCollection() {
+    if (!this.mongodbUrl) {
+      return null;
+    }
+
+    if (this.mongoActivitiesCollection) {
+      return this.mongoActivitiesCollection;
+    }
+
+    const db = await this.getMongoDb();
+    if (!db) {
+      return null;
+    }
+
+    this.mongoActivitiesCollection = db.collection("activities");
+    return this.mongoActivitiesCollection;
   }
 
   async getMongoUsersCollection() {
@@ -452,6 +471,120 @@ export class MessageServer extends EventEmitter {
 
   async getMongoUsersCollectionOrThrow() {
     return this.getMongoUsersCollection();
+  }
+
+  /**
+   * Check if a client is currently being accessed
+   * Returns { userId, userName, sessionId, accessStarted } or null
+   */
+  getActiveClientAccess(clientKey) {
+    const normalized = String(clientKey || "")
+      .trim()
+      .toLowerCase();
+    if (!normalized) return null;
+    return this.activeClientAccess.get(normalized) || null;
+  }
+
+  /**
+   * Request access to a client
+   * Returns { granted: true } or { granted: false, conflict: { userId, userName, sessionId } }
+   */
+  requestClientAccess(clientKey, userId, userName, sessionId) {
+    const normalized = String(clientKey || "")
+      .trim()
+      .toLowerCase();
+    if (!normalized) return { granted: true };
+
+    const existing = this.activeClientAccess.get(normalized);
+    if (!existing) {
+      // No conflict, grant access
+      this.activeClientAccess.set(normalized, {
+        userId,
+        userName,
+        sessionId,
+        accessStarted: Date.now(),
+      });
+      return { granted: true };
+    }
+
+    // Check if it's the same user (same sessionId)
+    if (existing.sessionId === sessionId) {
+      return { granted: true };
+    }
+
+    // Different user accessing the same client
+    return {
+      granted: false,
+      conflict: {
+        userId: existing.userId,
+        userName: existing.userName,
+        sessionId: existing.sessionId,
+      },
+    };
+  }
+
+  /**
+   * Take over access to a client, disconnecting the previous user
+   */
+  takeoverClientAccess(clientKey, userId, userName, sessionId) {
+    const normalized = String(clientKey || "")
+      .trim()
+      .toLowerCase();
+    if (!normalized) return;
+
+    const previous = this.activeClientAccess.get(normalized);
+    this.activeClientAccess.set(normalized, {
+      userId,
+      userName,
+      sessionId,
+      accessStarted: Date.now(),
+    });
+
+    // Notify the previous user that they lost access
+    if (previous && previous.sessionId !== sessionId) {
+      const previousWs = this.connectedClients.get(previous.sessionId);
+      if (previousWs) {
+        try {
+          previousWs.send(
+            JSON.stringify({
+              type: "client_access_taken",
+              clientKey,
+              takenBy: userName,
+            }),
+          );
+        } catch (error) {}
+      }
+    }
+  }
+
+  /**
+   * Release access to a client
+   */
+  releaseClientAccess(clientKey, sessionId) {
+    const normalized = String(clientKey || "")
+      .trim()
+      .toLowerCase();
+    if (!normalized) return;
+
+    const current = this.activeClientAccess.get(normalized);
+    if (current && current.sessionId === sessionId) {
+      this.activeClientAccess.delete(normalized);
+    }
+  }
+
+  /**
+   * Release all client access for a session (e.g., on disconnect)
+   */
+  releaseAllClientAccessForSession(sessionId) {
+    const toDelete = [];
+    for (const [clientKey, access] of this.activeClientAccess.entries()) {
+      if (access.sessionId === sessionId) {
+        toDelete.push(clientKey);
+      }
+    }
+    for (const clientKey of toDelete) {
+      this.activeClientAccess.delete(clientKey);
+    }
   }
 
   isAdminEmail(email) {
@@ -703,7 +836,19 @@ export class MessageServer extends EventEmitter {
 
     const assignedIds = await this.getAssignedClientIds(user);
     if (!Array.isArray(assignedIds) || assignedIds.length === 0) {
-      return [];
+      const userId = this.getUserIdentifier(user);
+      console.log(`[FilterMessages] User ${userId} has NO assigned clients - showing all available messages`);
+      // For non-admin users without assignments, show all messages
+      // This allows the app to work while assignments are being set up
+      const allPayloads = (payloads || []).map((payload) =>
+        payload ? JSON.parse(JSON.stringify(payload)) : payload,
+      );
+      if (!normalizedTarget) {
+        return allPayloads;
+      }
+      return allPayloads.filter((payload) =>
+        this.payloadMatchesConversationTarget(payload, normalizedTarget),
+      );
     }
 
     const filteredPayloads = [];
@@ -746,6 +891,8 @@ export class MessageServer extends EventEmitter {
 
   async filterClientListForUser(user, clientListPayload) {
     const isAdmin = user && this.normalizeRole(user.role, user) === "admin";
+    const userId = this.getUserIdentifier(user);
+
     if (!clientListPayload) {
       return clientListPayload;
     }
@@ -760,21 +907,34 @@ export class MessageServer extends EventEmitter {
       : 0;
 
     if (isAdmin) {
+      console.log(`[FilterClientList] Admin user ${userId} - returning all ${clientCount} clients`);
       return sanitizedPayload;
     }
 
     const assignedIds = await this.getAssignedClientIds(user);
 
-    if (!assignedIds.length) {
-      return {
-        ...clientListPayload,
-        clients: [],
-      };
+    console.log(`[FilterClientList] Non-admin user ${userId}:`, {
+      assignedIds,
+      assignedCount: assignedIds.length,
+      totalClients: clientCount,
+    });
+
+    if (!assignedIds || assignedIds.length === 0) {
+      console.log(`[FilterClientList] User ${userId} has NO assigned clients - showing all available clients (${clientCount} total)`);
+      // For non-admin users without assignments, show all clients
+      // This allows the app to work while assignments are being set up
+      return sanitizedPayload;
     }
 
-    const filteredClients = (sanitizedPayload.clients || []).filter((client) =>
-      this.clientMatchesAssignedIds(client, assignedIds),
-    );
+    const filteredClients = (sanitizedPayload.clients || []).filter((client) => {
+      const matches = this.clientMatchesAssignedIds(client, assignedIds);
+      if (matches) {
+        console.log(`[FilterClientList] Client ${client.username} matches assigned IDs`);
+      }
+      return matches;
+    });
+
+    console.log(`[FilterClientList] Filtered ${filteredClients.length} clients for user ${userId}`);
 
     return {
       ...sanitizedPayload,
@@ -1737,15 +1897,48 @@ export class MessageServer extends EventEmitter {
     }
 
     const coll = await this.getMongoUsersCollection();
-    if (!coll) {
-      return this.sendJsonResponse(res, 200, { users: [] });
+    const byKey = new Map();
+
+    if (coll) {
+      const mongoUsers = await coll
+        .find({})
+        .project({ passwordHash: 0, passwordSalt: 0, authTokens: 0 })
+        .sort({ created_at: -1 })
+        .toArray();
+
+      mongoUsers.forEach((entry) => {
+        const key = String(
+          entry?._id || entry?.id || entry?.email || entry?.username || "",
+        )
+          .trim()
+          .toLowerCase();
+        if (key) {
+          byKey.set(key, entry);
+        }
+      });
     }
 
-    const users = await coll
-      .find({})
-      .project({ passwordHash: 0, passwordSalt: 0, authTokens: 0 })
-      .sort({ created_at: -1 })
-      .toArray();
+    Array.from(this.localUsers.values()).forEach((entry) => {
+      const key = String(
+        entry?._id || entry?.id || entry?.email || entry?.username || "",
+      )
+        .trim()
+        .toLowerCase();
+
+      if (!key || byKey.has(key)) {
+        return;
+      }
+
+      const { passwordHash, passwordSalt, authTokens, ...safeUser } = entry || {};
+      byKey.set(key, safeUser);
+    });
+
+    const users = Array.from(byKey.values()).sort((left, right) => {
+      const leftTime = Date.parse(left?.created_at || left?.updated_at || "") || 0;
+      const rightTime = Date.parse(right?.created_at || right?.updated_at || "") || 0;
+      return rightTime - leftTime;
+    });
+
     return this.sendJsonResponse(res, 200, { users });
   }
 
@@ -1839,6 +2032,33 @@ export class MessageServer extends EventEmitter {
       .toArray();
 
     return this.sendJsonResponse(res, 200, { activities });
+  }
+
+  async logUserActivity(req, user, activityData) {
+    if (!this.mongodbUrl) {
+      return;
+    }
+
+    try {
+      const coll = await this.getMongoActivitiesCollection();
+      if (!coll) {
+        return;
+      }
+
+      const activity = {
+        userId: user._id || user.id || user.email,
+        userName: user.username || user.email,
+        role: user.role || "user",
+        activityType: activityData.activityType || "unknown",
+        description: activityData.description || "",
+        metadata: activityData.metadata || {},
+        created_at: new Date(),
+        updated_at: new Date(),
+      };
+
+      await coll.insertOne(activity);
+    } catch (error) {
+    }
   }
 
   /**
@@ -4139,8 +4359,17 @@ export class MessageServer extends EventEmitter {
         snapshotClientData.set(key, JSON.parse(JSON.stringify(value)));
       }
     } else {
-      for (const [key, value] of this.storedClientData.entries()) {
-        if (this.payloadMatchesAssignedIds(value, assignedIds)) {
+      // If user has no assignments, show all client data
+      // Otherwise filter by assigned clients
+      if (assignedIds.length > 0) {
+        for (const [key, value] of this.storedClientData.entries()) {
+          if (this.payloadMatchesAssignedIds(value, assignedIds)) {
+            snapshotClientData.set(key, JSON.parse(JSON.stringify(value)));
+          }
+        }
+      } else {
+        // Show all client data when user has no assignments
+        for (const [key, value] of this.storedClientData.entries()) {
           snapshotClientData.set(key, JSON.parse(JSON.stringify(value)));
         }
       }
@@ -4218,7 +4447,7 @@ export class MessageServer extends EventEmitter {
 
       let snapshotNewMessages = this.storedNewMessages.slice(-10);
       let snapshotActivations = this.storedClientActivations.slice(-10);
-      if (!canShowAll) {
+      if (!canShowAll && assignedIds.length > 0) {
         snapshotNewMessages = snapshotNewMessages.filter((newMsg) =>
           this.payloadMatchesAssignedIds(newMsg, assignedIds),
         );
@@ -4439,18 +4668,24 @@ export class MessageServer extends EventEmitter {
       }
 
       const user = ws._user || null;
+      const userId = this.getUserIdentifier(user);
       const canShowAll =
         user && this.normalizeRole(user.role, user) === "admin";
       let messageToSend = message;
+
+      console.log(`[broadcastToExpoClients] Message type: ${message.type}, canShowAll: ${canShowAll}, userId: ${userId}`);
 
       if (!canShowAll) {
         const assignedIds = await this.getAssignedClientIds(user);
 
         if (message.type === "client_list_data") {
+          console.log(`[broadcastToExpoClients] Filtering client_list_data for non-admin user ${userId}`);
           const filteredList = await this.filterClientListForUser(
             user,
             JSON.parse(JSON.stringify(message.data || {})),
           );
+          console.log(`[broadcastToExpoClients] Filtered list has ${filteredList.clients?.length || 0} clients`);
+
           messageToSend = {
             type: "client_list_data",
             data: filteredList,
