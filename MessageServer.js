@@ -1501,7 +1501,7 @@ export class MessageServer extends EventEmitter {
       });
       const frontendUrl = process.env.FRONTEND_URL || "http://localhost:3000";
       const resetLink =
-        `${frontendUrl}/reset-password?token=${encodeURIComponent(resetToken)}` +
+        `${frontendUrl}/?reset=1&token=${encodeURIComponent(resetToken)}` +
         `&email=${encodeURIComponent(normalizedEmail)}`;
       console.log("[Auth] Password reset link generated:", {
         email: normalizedEmail,
