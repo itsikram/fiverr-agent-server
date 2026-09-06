@@ -1,3 +1,4 @@
+import '../config/env.js';
 import nodemailer from 'nodemailer';
 
 /**

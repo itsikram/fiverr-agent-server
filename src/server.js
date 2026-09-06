@@ -4,21 +4,12 @@
  * Provides REST API for Fiverr Agent browser extension
  */
 
-import dotenv from 'dotenv';
-import { fileURLToPath } from 'url';
-import { dirname, join } from 'path';
+import './config/env.js';
 import { createApp, attachWebSocketServer } from './app.js';
 import { connectDatabase, disconnectDatabase, isDatabaseConnected } from './config/database.js';
 import { MessageServer } from './services/MessageServerService.js';
 import { checkPortAvailable, findProcessUsingPort, getKillPortCommand } from '../utils/serverUtils.js';
 import http from 'http';
-
-const __filename = fileURLToPath(import.meta.url);
-const __dirname = dirname(__filename);
-
-// Load .env from the server project root
-const envPath = join(__dirname, '..', '.env');
-dotenv.config({ path: envPath });
 
 /**
  * Get port from environment
