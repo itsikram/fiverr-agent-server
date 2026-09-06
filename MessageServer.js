@@ -1467,6 +1467,11 @@ export class MessageServer extends EventEmitter {
     const resetToken = crypto.randomBytes(32).toString("hex");
     const resetExpires = new Date(Date.now() + 60 * 60 * 1000);
     const resetData = { token: resetToken, expires: resetExpires };
+    console.log("[Auth] Password reset token generated:", {
+      email: normalizedEmail,
+      token: resetToken,
+      expiresAt: resetExpires.toISOString(),
+    });
     const coll = await this.getMongoUsersCollection();
 
     if (coll) {
@@ -1498,6 +1503,10 @@ export class MessageServer extends EventEmitter {
       const resetLink =
         `${frontendUrl}/reset-password?token=${encodeURIComponent(resetToken)}` +
         `&email=${encodeURIComponent(normalizedEmail)}`;
+      console.log("[Auth] Password reset link generated:", {
+        email: normalizedEmail,
+        resetLink,
+      });
       try {
         await transporter.sendMail({
           from: process.env.EMAIL_FROM || process.env.EMAIL_USER,
