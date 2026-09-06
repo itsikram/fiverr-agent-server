@@ -1486,6 +1486,9 @@ export class MessageServer extends EventEmitter {
         host: process.env.EMAIL_HOST || "smtp.gmail.com",
         port: parseInt(process.env.EMAIL_PORT || "587", 10),
         secure: process.env.EMAIL_SECURE === "true",
+        connectionTimeout: 10000,
+        greetingTimeout: 10000,
+        socketTimeout: 10000,
         auth: {
           user: process.env.EMAIL_USER,
           pass: process.env.EMAIL_PASSWORD,
@@ -1495,13 +1498,19 @@ export class MessageServer extends EventEmitter {
       const resetLink =
         `${frontendUrl}/reset-password?token=${encodeURIComponent(resetToken)}` +
         `&email=${encodeURIComponent(normalizedEmail)}`;
-      await transporter.sendMail({
-        from: process.env.EMAIL_FROM || process.env.EMAIL_USER,
-        to: normalizedEmail,
-        subject: "Password Reset Request",
-        text: `Reset your password within 1 hour: ${resetLink}`,
-        html: `<p>Reset your password within 1 hour:</p><p><a href="${resetLink}">${resetLink}</a></p>`,
-      });
+      try {
+        await transporter.sendMail({
+          from: process.env.EMAIL_FROM || process.env.EMAIL_USER,
+          to: normalizedEmail,
+          subject: "Password Reset Request",
+          text: `Reset your password within 1 hour: ${resetLink}`,
+          html: `<p>Reset your password within 1 hour:</p><p><a href="${resetLink}">${resetLink}</a></p>`,
+        });
+      } catch {
+        // Keep the endpoint response stable when SMTP is unavailable.
+      } finally {
+        transporter.close();
+      }
     }
   }
 
