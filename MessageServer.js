@@ -4306,7 +4306,10 @@ export class MessageServer extends EventEmitter {
         return;
       }
 
-      if (this.connectedClients.size === 0) {
+      const browserClients = Array.from(this.connectedClients.entries()).filter(
+        ([sessionId]) => this.clientTypes.get(sessionId) === "browser",
+      );
+      if (browserClients.length === 0) {
         ws.send(
           JSON.stringify({
             type: "ack",
@@ -4319,32 +4322,18 @@ export class MessageServer extends EventEmitter {
       }
 
       try {
-        const profileUrl = `https://www.fiverr.com/${username}`;
-
-        if (!this.navigateToUrl(profileUrl)) {
-          ws.send(
-            JSON.stringify({
-              type: "ack",
-              status: "error",
-              message: "Failed to send navigate command to browser extension",
-            }),
-          );
-          return;
-        }
+        this.broadcastBrowserCommand({
+          type: "fetch_client_details",
+          username: String(username).trim(),
+        });
 
         ws.send(
           JSON.stringify({
             type: "ack",
             status: "success",
-            message: `Navigating to ${username}'s profile. Extraction will start shortly...`,
+            message: `Fetching ${username}'s profile details from Fiverr...`,
           }),
         );
-
-        // Wait longer for page to fully load (8 seconds) then trigger extraction
-        // The content script will also wait for page load, so this gives enough time
-        setTimeout(() => {
-          this.triggerClientExtraction();
-        }, 8000);
       } catch (error) {
         ws.send(
           JSON.stringify({
@@ -4354,6 +4343,24 @@ export class MessageServer extends EventEmitter {
           }),
         );
       }
+    } else if (msgType === "fetch_client_details_status") {
+      if (data.success === false) {
+        this.broadcastToExpoClients({
+          type: "fetch_client_details_error",
+          username: data.username || null,
+          message:
+            data.message ||
+            "The browser extension could not fetch client details from Fiverr.",
+        });
+      }
+
+      ws.send(
+        JSON.stringify({
+          type: "ack",
+          status: data.success === false ? "error" : "success",
+          message: data.message || "Fetch client details completed",
+        }),
+      );
     } else if (msgType === "command_status") {
       const commandType = data.commandType;
       const status = data.status || "unknown";
@@ -5000,6 +5007,42 @@ export class MessageServer extends EventEmitter {
   }
 
   /**
+   * Broadcast a browser-only command so app clients never receive extension
+   * control messages and cannot be mistaken for an available extension.
+   */
+  async broadcastBrowserCommand(command) {
+    const browserClients = Array.from(this.connectedClients.entries()).filter(
+      ([sessionId]) => this.clientTypes.get(sessionId) === "browser",
+    );
+    if (browserClients.length === 0) {
+      return false;
+    }
+
+    const message = JSON.stringify({
+      type: "commands",
+      commands: [command],
+    });
+    const disconnected = [];
+    for (const [sessionId, ws] of browserClients) {
+      try {
+        ws.send(message);
+      } catch (error) {
+        disconnected.push(sessionId);
+      }
+    }
+    for (const sessionId of disconnected) {
+      const disconnectedSocket = this.connectedClients.get(sessionId);
+      if (disconnectedSocket) {
+        this.cleanupWebSocketSession(disconnectedSocket);
+      } else {
+        this.connectedClients.delete(sessionId);
+        this.clientTypes.delete(sessionId);
+      }
+    }
+    return true;
+  }
+
+  /**
    * Create HTTP server for health checks
    * Note: WebSocket upgrade requests are handled automatically by WebSocketServer
    */
@@ -5534,7 +5577,7 @@ export class MessageServer extends EventEmitter {
   /**
    * Trigger client data extraction
    */
-  triggerClientExtraction() {
+  triggerClientExtraction(username = null) {
     if (!this.running) {
       return false;
     }
@@ -5542,6 +5585,7 @@ export class MessageServer extends EventEmitter {
     const command = {
       type: "trigger",
       action: "extract_client_data",
+      username: username || null,
     };
 
     if (this.connectedClients.size > 0) {
