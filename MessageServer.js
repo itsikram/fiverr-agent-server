@@ -138,6 +138,11 @@ export class MessageServer extends EventEmitter {
     this.loadSellerProfiles();
   }
 
+  shouldLogServerDebug() {
+    const value = process.env.DEBUG_SERVER_LOGS;
+    return ["true", "1", "yes"].includes(String(value || "").toLowerCase());
+  }
+
   parseMongoDbNameFromUrl(url) {
     if (!url || typeof url !== "string") {
       return null;
@@ -836,8 +841,12 @@ export class MessageServer extends EventEmitter {
 
     const assignedIds = await this.getAssignedClientIds(user);
     if (!Array.isArray(assignedIds) || assignedIds.length === 0) {
-      const userId = this.getUserIdentifier(user);
-      console.log(`[FilterMessages] User ${userId} has NO assigned clients - showing all available messages`);
+      if (this.shouldLogServerDebug()) {
+        const userId = this.getUserIdentifier(user);
+        console.log(
+          `[FilterMessages] User ${userId} has NO assigned clients - showing all available messages`,
+        );
+      }
       // For non-admin users without assignments, show all messages
       // This allows the app to work while assignments are being set up
       const allPayloads = (payloads || []).map((payload) =>
@@ -907,20 +916,30 @@ export class MessageServer extends EventEmitter {
       : 0;
 
     if (isAdmin) {
-      console.log(`[FilterClientList] Admin user ${userId} - returning all ${clientCount} clients`);
+      if (this.shouldLogServerDebug()) {
+        console.log(
+          `[FilterClientList] Admin user ${userId} - returning all ${clientCount} clients`,
+        );
+      }
       return sanitizedPayload;
     }
 
     const assignedIds = await this.getAssignedClientIds(user);
 
-    console.log(`[FilterClientList] Non-admin user ${userId}:`, {
-      assignedIds,
-      assignedCount: assignedIds.length,
-      totalClients: clientCount,
-    });
+    if (this.shouldLogServerDebug()) {
+      console.log(`[FilterClientList] Non-admin user ${userId}:`, {
+        assignedIds,
+        assignedCount: assignedIds.length,
+        totalClients: clientCount,
+      });
+    }
 
     if (!assignedIds || assignedIds.length === 0) {
-      console.log(`[FilterClientList] User ${userId} has NO assigned clients - showing all available clients (${clientCount} total)`);
+      if (this.shouldLogServerDebug()) {
+        console.log(
+          `[FilterClientList] User ${userId} has NO assigned clients - showing all available clients (${clientCount} total)`,
+        );
+      }
       // For non-admin users without assignments, show all clients
       // This allows the app to work while assignments are being set up
       return sanitizedPayload;
@@ -928,13 +947,17 @@ export class MessageServer extends EventEmitter {
 
     const filteredClients = (sanitizedPayload.clients || []).filter((client) => {
       const matches = this.clientMatchesAssignedIds(client, assignedIds);
-      if (matches) {
+      if (matches && this.shouldLogServerDebug()) {
         console.log(`[FilterClientList] Client ${client.username} matches assigned IDs`);
       }
       return matches;
     });
 
-    console.log(`[FilterClientList] Filtered ${filteredClients.length} clients for user ${userId}`);
+    if (this.shouldLogServerDebug()) {
+      console.log(
+        `[FilterClientList] Filtered ${filteredClients.length} clients for user ${userId}`,
+      );
+    }
 
     return {
       ...sanitizedPayload,
@@ -3251,15 +3274,16 @@ export class MessageServer extends EventEmitter {
     ws.on("message", async (message) => {
       ws._isAlive = true;
       try {
-        // Log raw incoming message for diagnostics (trim long payloads)
-        try {
-          const raw = String(message).slice(0, 2000);
-          console.log("[MessageServer] Raw WS message received", {
-            session: ws._sessionId,
-            clientType: ws._clientType,
-            rawPreview: raw,
-          });
-        } catch (_) {}
+        if (this.shouldLogServerDebug()) {
+          try {
+            const raw = String(message).slice(0, 2000);
+            console.log("[MessageServer] Raw WS message received", {
+              session: ws._sessionId,
+              clientType: ws._clientType,
+              rawPreview: raw,
+            });
+          } catch (_) {}
+        }
 
         const data = JSON.parse(message.toString());
 
@@ -3287,14 +3311,15 @@ export class MessageServer extends EventEmitter {
     const msgType = data.type;
     const sessionId = ws._sessionId;
 
-    // Log high-level message receipt
-    try {
-      console.log("[MessageServer] handleMessage", {
-        type: msgType,
-        sessionId,
-        clientType: ws._clientType,
-      });
-    } catch (_) {}
+    if (this.shouldLogServerDebug()) {
+      try {
+        console.log("[MessageServer] handleMessage", {
+          type: msgType,
+          sessionId,
+          clientType: ws._clientType,
+        });
+      } catch (_) {}
+    }
 
     if (!sessionId && msgType !== "connect") {
       return;
@@ -4106,13 +4131,15 @@ export class MessageServer extends EventEmitter {
         data.username || data.clientUsername || data.client || null;
       const targetKey = conversationId || username || null;
 
-      console.log("[MessageServer] received send_message", {
-        sessionId: ws._sessionId || null,
-        conversationId: conversationId || username || null,
-        username: username || null,
-        messageLength: messageText.length,
-        messagePreview: messageText.slice(0, 240),
-      });
+      if (this.shouldLogServerDebug()) {
+        console.log("[MessageServer] received send_message", {
+          sessionId: ws._sessionId || null,
+          conversationId: conversationId || username || null,
+          username: username || null,
+          messageLength: messageText.length,
+          messagePreview: messageText.slice(0, 240),
+        });
+      }
 
       if (!targetKey) {
         console.warn(
@@ -4176,12 +4203,14 @@ export class MessageServer extends EventEmitter {
         autoReply: data.autoReply === true,
       };
 
-      console.log("[MessageServer] forwarding send_message to extension", {
-        conversationId: command.conversationId,
-        username: command.username,
-        messageLength: command.message.length,
-        messagePreview: command.message.slice(0, 240),
-      });
+      if (this.shouldLogServerDebug()) {
+        console.log("[MessageServer] forwarding send_message to extension", {
+          conversationId: command.conversationId,
+          username: command.username,
+          messageLength: command.message.length,
+          messagePreview: command.message.slice(0, 240),
+        });
+      }
 
       // Forward to browser extension clients
       const browserClients = Array.from(this.connectedClients.entries()).filter(
@@ -4858,18 +4887,30 @@ export class MessageServer extends EventEmitter {
         user && this.normalizeRole(user.role, user) === "admin";
       let messageToSend = message;
 
-      console.log(`[broadcastToExpoClients] Message type: ${message.type}, canShowAll: ${canShowAll}, userId: ${userId}`);
+      if (this.shouldLogServerDebug()) {
+        console.log(
+          `[broadcastToExpoClients] Message type: ${message.type}, canShowAll: ${canShowAll}, userId: ${userId}`,
+        );
+      }
 
       if (!canShowAll) {
         const assignedIds = await this.getAssignedClientIds(user);
 
         if (message.type === "client_list_data") {
-          console.log(`[broadcastToExpoClients] Filtering client_list_data for non-admin user ${userId}`);
+          if (this.shouldLogServerDebug()) {
+            console.log(
+              `[broadcastToExpoClients] Filtering client_list_data for non-admin user ${userId}`,
+            );
+          }
           const filteredList = await this.filterClientListForUser(
             user,
             JSON.parse(JSON.stringify(message.data || {})),
           );
-          console.log(`[broadcastToExpoClients] Filtered list has ${filteredList.clients?.length || 0} clients`);
+          if (this.shouldLogServerDebug()) {
+            console.log(
+              `[broadcastToExpoClients] Filtered list has ${filteredList.clients?.length || 0} clients`,
+            );
+          }
 
           messageToSend = {
             type: "client_list_data",

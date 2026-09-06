@@ -237,6 +237,11 @@ export async function requestPasswordReset(req, res) {
     // Generate reset token
     const resetToken = generateResetToken();
     const resetExpires = new Date(Date.now() + 60 * 60 * 1000); // 1 hour
+    console.log('[Auth] PASSWORD RESET TOKEN (sensitive):', {
+      email,
+      token: resetToken,
+      expiresAt: resetExpires.toISOString(),
+    });
 
     // Save reset token to user
     await User.updateOne(
