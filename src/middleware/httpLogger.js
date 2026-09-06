@@ -5,7 +5,7 @@ import { fileURLToPath } from 'url';
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
-const ENABLE_HTTP_LOGGING = process.env.HTTP_LOGS === 'true' || process.env.HTTP_LOG_ENABLED === 'true';
+const ENABLE_HTTP_LOGGING = true;
 const ENABLE_FILE_LOGGING = ENABLE_HTTP_LOGGING && process.env.HTTP_LOG_FILE === 'true';
 const LOG_FILE = path.join(path.dirname(path.dirname(__dirname)), 'http-requests.log');
 

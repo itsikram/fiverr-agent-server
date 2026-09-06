@@ -6,12 +6,14 @@ import http from "http";
 import { EventEmitter } from "events";
 import mongoose from "mongoose";
 import crypto from "crypto";
+import nodemailer from "nodemailer";
 import fs from "fs";
 import path from "path";
 import { Resolver, promises as dnsPromises } from "dns";
 import { fileURLToPath } from "url";
 import { generateSessionId } from "./utils/serverUtils.js";
 import pushNotificationService from "./utils/pushNotificationService.js";
+import { withHttpLogging } from "./utils/httpLogger.js";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -250,6 +252,7 @@ export class MessageServer extends EventEmitter {
     if (!this.mongodbUrl) {
       if (!this.mongoConnectionWarningShown) {
         this.mongoConnectionWarningShown = true;
+        console.error("[Database] MongoDB is not configured");
       }
       return null;
     }
@@ -275,12 +278,14 @@ export class MessageServer extends EventEmitter {
       this.mongooseConnection = mongoose.connection;
       this.mongoClient = this.mongooseConnection;
       this.mongoDb = this.mongooseConnection.db;
+      console.log("[Database] Connected to MongoDB");
 
-      this.mongooseConnection.on("error", (error) => {});
-
-      this.mongooseConnection.on("disconnected", () => {});
-
-      this.mongooseConnection.on("connected", () => {});
+      this.mongooseConnection.on("error", (error) => {
+        console.error("[Database] MongoDB error:", error.message);
+      });
+      this.mongooseConnection.on("disconnected", () => {
+        console.log("[Database] Disconnected from MongoDB");
+      });
 
       return this.mongooseConnection;
     })().catch(async (error) => {
@@ -303,6 +308,7 @@ export class MessageServer extends EventEmitter {
           this.mongooseConnection = mongoose.connection;
           this.mongoClient = this.mongooseConnection;
           this.mongoDb = this.mongooseConnection.db;
+          console.log("[Database] Connected to MongoDB");
 
           return this.mongooseConnection;
         } catch (fallbackError) {
@@ -313,6 +319,7 @@ export class MessageServer extends EventEmitter {
 
       if (!this.mongoConnectionWarningShown) {
         this.mongoConnectionWarningShown = true;
+        console.error("[Database] MongoDB connection failed:", error.message);
       }
       this.mongoConnectionDisabled = true;
       this.mongoClient = null;
@@ -1448,6 +1455,91 @@ export class MessageServer extends EventEmitter {
       user.passwordHash,
     );
     return valid ? user : null;
+  }
+
+  async requestPasswordReset({ email }) {
+    const normalizedEmail = this.normalizeString(email).toLowerCase();
+    const user = await this.getUserByEmail(normalizedEmail);
+    if (!user) {
+      return;
+    }
+
+    const resetToken = crypto.randomBytes(32).toString("hex");
+    const resetExpires = new Date(Date.now() + 60 * 60 * 1000);
+    const resetData = { token: resetToken, expires: resetExpires };
+    const coll = await this.getMongoUsersCollection();
+
+    if (coll) {
+      await coll.updateOne(
+        { email: normalizedEmail },
+        { $set: { passwordReset: resetData, updated_at: new Date().toISOString() } },
+      );
+    } else {
+      user.passwordReset = resetData;
+      user.updated_at = new Date().toISOString();
+      this.localUsers.set(normalizedEmail, user);
+      this.persistLocalUsersStore();
+    }
+
+    if (process.env.EMAIL_USER && process.env.EMAIL_PASSWORD) {
+      const transporter = nodemailer.createTransport({
+        host: process.env.EMAIL_HOST || "smtp.gmail.com",
+        port: parseInt(process.env.EMAIL_PORT || "587", 10),
+        secure: process.env.EMAIL_SECURE === "true",
+        auth: {
+          user: process.env.EMAIL_USER,
+          pass: process.env.EMAIL_PASSWORD,
+        },
+      });
+      const frontendUrl = process.env.FRONTEND_URL || "http://localhost:3000";
+      const resetLink =
+        `${frontendUrl}/reset-password?token=${encodeURIComponent(resetToken)}` +
+        `&email=${encodeURIComponent(normalizedEmail)}`;
+      await transporter.sendMail({
+        from: process.env.EMAIL_FROM || process.env.EMAIL_USER,
+        to: normalizedEmail,
+        subject: "Password Reset Request",
+        text: `Reset your password within 1 hour: ${resetLink}`,
+        html: `<p>Reset your password within 1 hour:</p><p><a href="${resetLink}">${resetLink}</a></p>`,
+      });
+    }
+  }
+
+  async resetPassword({ email, token, newPassword }) {
+    const normalizedEmail = this.normalizeString(email).toLowerCase();
+    const user = await this.getUserByEmail(normalizedEmail);
+    if (
+      !user ||
+      !user.passwordReset ||
+      user.passwordReset.token !== token ||
+      new Date() > new Date(user.passwordReset.expires)
+    ) {
+      return false;
+    }
+
+    const { salt, hash } = await this.hashPassword(newPassword);
+    const coll = await this.getMongoUsersCollection();
+    if (coll) {
+      await coll.updateOne(
+        { email: normalizedEmail },
+        {
+          $set: {
+            passwordHash: hash,
+            passwordSalt: salt,
+            passwordReset: null,
+            updated_at: new Date().toISOString(),
+          },
+        },
+      );
+    } else {
+      user.passwordHash = hash;
+      user.passwordSalt = salt;
+      user.passwordReset = null;
+      user.updated_at = new Date().toISOString();
+      this.localUsers.set(normalizedEmail, user);
+      this.persistLocalUsersStore();
+    }
+    return true;
   }
 
   async sendJsonResponse(res, status, payload) {
@@ -5047,7 +5139,7 @@ export class MessageServer extends EventEmitter {
    * Note: WebSocket upgrade requests are handled automatically by WebSocketServer
    */
   createHttpServer() {
-    return http.createServer((req, res) => {
+    return http.createServer(withHttpLogging((req, res) => {
       // Check if this is a WebSocket upgrade request
       // If so, let the WebSocketServer handle it (it will intercept before this handler)
       const upgrade = req.headers.upgrade;
@@ -5162,6 +5254,58 @@ export class MessageServer extends EventEmitter {
             await this.sendJsonResponse(res, 500, {
               error: "Internal server error",
             });
+          }
+        })();
+        return;
+      }
+
+      if (
+        (pathname === "/auth/request-password-reset" ||
+          pathname === "/auth/reset-password") &&
+        req.method === "POST"
+      ) {
+        (async () => {
+          try {
+            const body = await this.parseJsonBody(req);
+            if (pathname === "/auth/request-password-reset") {
+              if (!this.normalizeString(body?.email)) {
+                await this.sendJsonResponse(res, 400, { error: "Email is required" });
+                return;
+              }
+              await this.requestPasswordReset({ email: body.email });
+              await this.sendJsonResponse(res, 200, {
+                success: true,
+                message: "If an account exists with this email, a password reset link has been sent.",
+              });
+              return;
+            }
+
+            const email = this.normalizeString(body?.email);
+            const token = this.normalizeString(body?.token);
+            const newPassword = this.normalizeString(body?.newPassword);
+            if (!email || !token || !newPassword) {
+              await this.sendJsonResponse(res, 400, {
+                error: "Email, token, and new password are required",
+              });
+              return;
+            }
+            if (newPassword.length < 6) {
+              await this.sendJsonResponse(res, 400, {
+                error: "Password must be at least 6 characters",
+              });
+              return;
+            }
+            const reset = await this.resetPassword({ email, token, newPassword });
+            await this.sendJsonResponse(
+              res,
+              reset ? 200 : 401,
+              reset
+                ? { success: true, message: "Password has been reset successfully." }
+                : { error: "Invalid or expired reset token" },
+            );
+          } catch (error) {
+            console.error("[Auth] Password reset error:", error);
+            await this.sendJsonResponse(res, 500, { error: "Internal server error" });
           }
         })();
         return;
@@ -5398,7 +5542,7 @@ export class MessageServer extends EventEmitter {
       // 404 for other paths
       res.writeHead(404);
       res.end();
-    });
+    }));
   }
 
   /**

@@ -29,18 +29,10 @@ async function main() {
   const isProd = process.env.RENDER === 'true' || (process.env.PORT && process.env.PORT.trim() !== '');
   const envName = isProd ? 'prod' : 'dev';
 
-  console.log('');
-  console.log(`╔════════════════════════════════════════╗`);
-  console.log(`║ 🚀 Fiverr Agent Message Server         ║`);
-  console.log(`╚════════════════════════════════════════╝`);
-  console.log('');
-  console.log(`[Server] Starting in ${envName} mode on port ${port}`);
-
   // Connect to database
   const dbConnected = await connectDatabase();
   if (!dbConnected) {
-    console.warn('[Server] ⚠️  Continuing without database. API endpoints may not work properly.');
-    console.warn('[Server] ⚠️  To use this server, start MongoDB: mongod');
+    console.error('[Database] Server is running without a database connection');
   }
 
   // Create Express app
@@ -58,7 +50,6 @@ async function main() {
   // Start HTTP server
   await new Promise((resolve) => {
     httpServer.listen(port, '0.0.0.0', () => {
-      console.log(`[Server] ✓ Listening on port ${port}`);
       resolve();
     });
   });
@@ -88,7 +79,6 @@ async function main() {
 
       if (response.statusCode === 200) {
         healthOk = true;
-        console.log('[Server] ✓ Health check passed');
         break;
       }
     } catch (error) {
@@ -99,7 +89,7 @@ async function main() {
   }
 
   if (!healthOk) {
-    console.warn('[Server] ⚠️  Health check warnings (server may still be functional)');
+    console.error('[Server] Health check failed');
   }
 
   // Graceful shutdown
@@ -111,20 +101,16 @@ async function main() {
     }
     shutdownDone = true;
 
-    console.log('[Server] ⏹️  Shutting down (${signal})');
-
       httpServer.close(() => {
-        console.log('[Server] ✓ HTTP server closed');
       });
 
       disconnectDatabase().then(() => {
-        console.log('[Server] ✓ Shutdown complete');
         process.exit(0);
       });
 
     // Force exit after 10 seconds
     setTimeout(() => {
-      console.warn('[Server] ⚠️  Forced exit after timeout');
+      console.error('[Server] Forced exit after timeout');
       process.exit(1);
     }, 10000);
   }
@@ -135,7 +121,7 @@ async function main() {
   // Monitor server health (optional - don't exit if DB is down)
   setInterval(() => {
     if (!isDatabaseConnected() && dbConnected) {
-      console.warn('[Server] ⚠️  Database connection lost');
+      console.error('[Database] Connection lost');
     }
   }, 30000);
 }
