@@ -3419,8 +3419,13 @@ export class MessageServer extends EventEmitter {
 
         await this.handleMessage(data, ws);
       } catch (error) {
-        if (error instanceof SyntaxError) {
-        } else {
+        if (!(error instanceof SyntaxError)) {
+          // Previously swallowed silently, which made failures undiagnosable.
+          console.error("[MessageServer] message handler error:", {
+            session: ws._sessionId,
+            clientType: ws._clientType,
+            error: error?.message || String(error),
+          });
         }
       }
     });
@@ -3461,7 +3466,21 @@ export class MessageServer extends EventEmitter {
 
       const authToken = data.token || data.authToken || null;
       if (authToken) {
-        const user = await this.getUserByToken(authToken);
+        let user = null;
+        for (let attempt = 0; attempt < 2 && !user; attempt += 1) {
+          try {
+            user = await this.getUserByToken(authToken);
+            break;
+          } catch (error) {
+            console.error(
+              "[MessageServer] token lookup failed during connect:",
+              error?.message || error,
+            );
+            if (attempt === 0) {
+              await new Promise((resolve) => setTimeout(resolve, 1000));
+            }
+          }
+        }
         if (user) {
           ws._user = user;
           ws._userId = this.getUserIdentifier(user);
@@ -4292,10 +4311,19 @@ export class MessageServer extends EventEmitter {
         currentUser &&
         this.normalizeRole(currentUser.role, currentUser) !== "admin"
       ) {
-        const canAccess = await this.canUserAccessClient(
-          currentUser,
-          targetKey,
-        );
+        let canAccess = false;
+        try {
+          canAccess = await this.canUserAccessClient(currentUser, targetKey);
+        } catch (error) {
+          console.error(
+            "[MessageServer] access check failed for send_message:",
+            error?.message || error,
+          );
+          replyError(
+            "The server could not verify your access right now (database unavailable). Please retry in a moment.",
+          );
+          return;
+        }
         if (!canAccess) {
           replyError("You are not authorized to message this client");
           return;
@@ -5070,7 +5098,22 @@ export class MessageServer extends EventEmitter {
   /**
    * Broadcast to Expo clients
    */
+  /**
+   * Many callers fire this without awaiting it. An unhandled rejection kills
+   * the Node process (and every connection with it), so it must never reject.
+   */
   async broadcastToExpoClients(message) {
+    try {
+      await this.broadcastToExpoClientsUnsafe(message);
+    } catch (error) {
+      console.error(
+        "[MessageServer] broadcastToExpoClients failed:",
+        error?.message || error,
+      );
+    }
+  }
+
+  async broadcastToExpoClientsUnsafe(message) {
     if (this.connectedClients.size === 0) {
       return;
     }
@@ -5095,7 +5138,21 @@ export class MessageServer extends EventEmitter {
       }
 
       if (!canShowAll) {
-        const assignedIds = await this.getAssignedClientIds(user);
+        let assignedIds;
+        try {
+          assignedIds = await this.getAssignedClientIds(user);
+        } catch (error) {
+          // Database hiccup: skip this user's copy rather than leak unfiltered
+          // data or abort the broadcast for everyone else.
+          if (message.type !== "extension_status" && message.type !== "send_message_result" && message.type !== "send_message_status") {
+            console.error(
+              "[MessageServer] assignment lookup failed:",
+              error?.message || error,
+            );
+            continue;
+          }
+          assignedIds = [];
+        }
 
         if (message.type === "client_list_data") {
           if (this.shouldLogServerDebug()) {

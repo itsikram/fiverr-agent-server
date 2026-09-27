@@ -11,6 +11,18 @@ import { MessageServer } from './services/MessageServerService.js';
 import { checkPortAvailable, findProcessUsingPort, getKillPortCommand } from '../utils/serverUtils.js';
 import http from 'http';
 
+// A stray async error must not take down every WebSocket (app + extension).
+// Log it and keep serving instead of letting Node exit on it.
+process.on('unhandledRejection', (reason) => {
+  console.error('[Server] Unhandled promise rejection:', reason?.stack || reason);
+});
+process.on('uncaughtException', (error) => {
+  console.error('[Server] Uncaught exception:', error?.stack || error);
+  if (error?.code === 'EADDRINUSE' || error?.code === 'EACCES') {
+    process.exit(1);
+  }
+});
+
 /**
  * Get port from environment
  */
@@ -43,6 +55,7 @@ async function main() {
 
   // Create MessageServer instance (for WebSocket handling)
   const messageServer = new MessageServer(port, httpServer);
+  app.locals.messageServer = messageServer.legacy;
 
   // Attach WebSocket server
   attachWebSocketServer(httpServer, messageServer);

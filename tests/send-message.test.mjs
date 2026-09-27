@@ -92,3 +92,24 @@ test("send_message without a target is rejected with a result", async () => {
   assert.equal(result.data.success, false);
   assert.equal(result.data.clientMessageId, "m3");
 });
+
+test("a database error during a broadcast never rejects (would crash the process)", async () => {
+  const server = new MessageServer(0);
+  const expo = fakeSocket();
+  register(server, "expo", "expo", expo);
+  expo._user = { _id: "u1", email: "u1@example.com", role: "user" };
+  server.getAssignedClientIds = async () => {
+    throw new Error("MongoNetworkError: connection reset");
+  };
+
+  await assert.doesNotReject(() =>
+    server.broadcastToExpoClients({ type: "client_list_data", data: { clients: [] } }),
+  );
+  // Delivery results are not client data, so they still reach the user.
+  await server.broadcastToExpoClients({
+    type: "send_message_result",
+    data: { clientMessageId: "x", success: true },
+  });
+  assert.equal(expo.sent.filter((m) => m.type === "client_list_data").length, 0);
+  assert.equal(expo.sent.filter((m) => m.type === "send_message_result").length, 1);
+});
