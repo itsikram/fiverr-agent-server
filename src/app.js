@@ -92,5 +92,29 @@ export function attachWebSocketServer(httpServer, messageServer) {
     console.error('[WebSocket] Error:', error.message);
   });
 
+  // Terminate zombie sockets (e.g. a Chrome MV3 service worker that died
+  // without closing). Without this a dead extension socket stays "connected"
+  // and send_message commands are written into the void.
+  const heartbeat = setInterval(() => {
+    wss.clients.forEach((ws) => {
+      if (ws._superseded) return;
+      if (ws._isAlive === false) {
+        try {
+          ws.terminate();
+        } catch (_) {}
+        return;
+      }
+      ws._isAlive = false;
+      try {
+        ws.ping();
+      } catch (_) {
+        try {
+          ws.terminate();
+        } catch (__) {}
+      }
+    });
+  }, 30000);
+  wss.on('close', () => clearInterval(heartbeat));
+
   return wss;
 }

@@ -18,6 +18,11 @@ import { withHttpLogging } from "./utils/httpLogger.js";
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
+// How long a send may wait for an offline extension before it is failed back.
+const PENDING_SEND_TTL_MS = 15 * 60 * 1000;
+// How long an extension has to report whether Fiverr accepted a send.
+const SEND_RESULT_TIMEOUT_MS = 100 * 1000;
+
 export class MessageServer extends EventEmitter {
   constructor(port = null) {
     super();
@@ -73,7 +78,8 @@ export class MessageServer extends EventEmitter {
     this.pendingTrigger = false;
     this.pendingClientTrigger = false;
     this.pendingClientListTrigger = false;
-    this.pendingSendMessage = null;
+    this.pendingSendMessages = [];
+    this.inFlightSends = new Map();
     this.pendingClickCommands = [];
     this.autoReplyConfig = null;
     this.tabReloadConfig = null;
@@ -3331,6 +3337,18 @@ export class MessageServer extends EventEmitter {
   }
 
   broadcastExpoPresenceToBrowsers() {
+    // Presence changed, so also tell Expo whether an extension is reachable;
+    // the app uses it to warn before sending instead of after a timeout.
+    const extensionConnected = this.getLiveBrowserSockets().length > 0;
+    if (this.lastBroadcastExtensionConnected !== extensionConnected) {
+      this.lastBroadcastExtensionConnected = extensionConnected;
+      this.broadcastToExpoClients({
+        type: "extension_status",
+        connected: extensionConnected,
+        timestamp: new Date().toISOString(),
+      });
+    }
+
     const expoConnected = this.isExpoConnected();
     const payload = JSON.stringify({
       type: "commands",
@@ -3378,11 +3396,13 @@ export class MessageServer extends EventEmitter {
 
     ws.on("pong", () => {
       ws._isAlive = true;
+      ws._lastSeenAt = Date.now();
     });
 
     // Set up message handler
     ws.on("message", async (message) => {
       ws._isAlive = true;
+      ws._lastSeenAt = Date.now();
       try {
         if (this.shouldLogServerDebug()) {
           try {
@@ -3547,6 +3567,7 @@ export class MessageServer extends EventEmitter {
       // Relay the extension's real send outcome so Expo can retry instead of
       // assuming a socket write meant the message reached Fiverr.
       const result = data.data || {};
+      this.settleInFlightSend(result.clientMessageId);
 
       this.broadcastToExpoClients({
         type: "send_message_result",
@@ -4052,9 +4073,7 @@ export class MessageServer extends EventEmitter {
       return;
     } else if (msgType === "request_extension_status") {
       // Check if any browser extensions are connected and report status to Expo app
-      const hasConnectedBrowserClient = Array.from(this.clientTypes.values()).some(
-        (clientType) => clientType === "browser"
-      );
+      const hasConnectedBrowserClient = this.getLiveBrowserSockets().length > 0;
 
       // Send extension status to Expo app
       try {
@@ -4236,40 +4255,35 @@ export class MessageServer extends EventEmitter {
         typeof rawMessageText === "string"
           ? rawMessageText.trim()
           : String(rawMessageText || "").trim();
-      const conversationId = data.conversationId;
+      const conversationId = data.conversationId || null;
       const username =
         data.username || data.clientUsername || data.client || null;
       const targetKey = conversationId || username || null;
+      const clientMessageId = data.clientMessageId
+        ? String(data.clientMessageId)
+        : `srv_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
 
-      if (this.shouldLogServerDebug()) {
-        console.log("[MessageServer] received send_message", {
-          sessionId: ws._sessionId || null,
-          conversationId: conversationId || username || null,
-          username: username || null,
-          messageLength: messageText.length,
-          messagePreview: messageText.slice(0, 240),
-        });
-      }
+      const replyError = (message) => {
+        const result = {
+          clientMessageId,
+          conversationId: targetKey,
+          autoReply: data.autoReply === true,
+          success: false,
+          error: message,
+        };
+        try {
+          ws.send(JSON.stringify({ type: "send_message_result", data: result }));
+          ws.send(JSON.stringify({ type: "ack", status: "error", message }));
+        } catch (_) {}
+      };
 
       if (!targetKey) {
-        console.warn(
-          "[MessageServer] send_message missing conversationId/username",
-          {
-            incoming: data,
-            sessionId: ws._sessionId || null,
-            user: ws._user || null,
-          },
-        );
+        replyError("No client selected — refusing to send to an unknown chat");
+        return;
       }
 
-      if (!messageText || !messageText.trim()) {
-        ws.send(
-          JSON.stringify({
-            type: "ack",
-            status: "error",
-            message: "Message text is required",
-          }),
-        );
+      if (!messageText) {
+        replyError("Message text is required");
         return;
       }
 
@@ -4283,126 +4297,80 @@ export class MessageServer extends EventEmitter {
           targetKey,
         );
         if (!canAccess) {
-          ws.send(
-            JSON.stringify({
-              type: "ack",
-              status: "error",
-              message: "You are not authorized to message this client",
-            }),
-          );
+          replyError("You are not authorized to message this client");
           return;
         }
       }
 
-      const targetIdentifier = conversationId || username || null;
-
-      // First, send an activate_inbox command to ensure the receiving client's inbox is active
-      const activateCommand = {
-        type: "activate_inbox",
-        conversationId: targetIdentifier,
-        username: targetIdentifier,
-      };
-
       const command = {
         type: "send_message",
+        clientMessageId,
         message: messageText,
         text: messageText,
         body: messageText,
-        conversationId: conversationId || username || null,
-        username: username || conversationId || null,
+        conversationId: conversationId || username,
+        username: username || conversationId,
         autoReply: data.autoReply === true,
+        queuedAt: Date.now(),
       };
 
       if (this.shouldLogServerDebug()) {
-        console.log("[MessageServer] forwarding send_message to extension", {
+        console.log("[MessageServer] send_message", {
+          clientMessageId,
           conversationId: command.conversationId,
-          username: command.username,
-          messageLength: command.message.length,
-          messagePreview: command.message.slice(0, 240),
+          messageLength: messageText.length,
         });
       }
 
-      // Forward to browser extension clients
-      const browserClients = Array.from(this.connectedClients.entries()).filter(
-        ([sid]) => this.clientTypes.get(sid) === "browser",
-      );
+      const delivered = this.dispatchSendCommand(command);
 
-      let forwardedToBrowser = false;
-
-      if (browserClients.length > 0) {
-        // Send activate_inbox command first, then send_message command
-        const activateMessage = JSON.stringify({
-          type: "commands",
-          commands: [activateCommand],
-        });
-
-        const sendMessage = JSON.stringify({
-          type: "commands",
-          commands: [command],
-        });
-
-        // Forward to exactly one browser extension to avoid duplicate Fiverr sends
-        // when multiple extension sockets are connected.
-        const [, browserWs] = browserClients[0];
-        try {
-          // Send activate command first
-          browserWs.send(activateMessage);
-          // Small delay to ensure inbox is activated before sending message
-          setTimeout(() => {
-            try {
-              browserWs.send(sendMessage);
-            } catch (sendError) {
-              console.error(
-                "[MessageServer] Error sending message after activation",
-                sendError,
-              );
-            }
-          }, 100);
-          forwardedToBrowser = true;
-        } catch (error) {
-          // Fall back to other browser clients if the first one failed
-          for (let i = 1; i < browserClients.length; i += 1) {
-            try {
-              const fallbackWs = browserClients[i][1];
-              fallbackWs.send(activateMessage);
-              setTimeout(() => {
-                try {
-                  fallbackWs.send(sendMessage);
-                } catch (sendError) {}
-              }, 100);
-              forwardedToBrowser = true;
-              break;
-            } catch (fallbackError) {}
-          }
-        }
-      } else {
-        this.pendingSendMessage = command;
+      if (!delivered && command.autoReply) {
+        // Auto-replies go stale quickly; fail now and let the caller decide
+        // again later instead of posting an outdated reply.
+        replyError(
+          "Chrome extension is offline, so the auto-reply was not sent.",
+        );
+        return;
       }
 
-      if (!forwardedToBrowser) {
-        // Say so now rather than leaving the sender waiting for a confirmation
-        // that no extension will ever produce.
+      if (!delivered) {
+        // Keep it until an extension connects instead of dropping it. Expo is
+        // told it is queued so it neither shows "sent" nor retries (which would
+        // double-send once the extension comes back).
+        this.enqueuePendingSend(command);
         this.broadcastToExpoClients({
-          type: "send_message_result",
+          type: "send_message_status",
           data: {
+            clientMessageId,
             conversationId: command.conversationId,
-            autoReply: command.autoReply,
-            success: false,
-            error:
-              "Browser extension is not connected to the server, so nothing could be typed into Fiverr. Open Fiverr in Chrome and activate the extension.",
+            status: "queued",
+            message:
+              "Chrome extension is offline. The message is queued and will be sent as soon as the extension reconnects.",
+          },
+        });
+      } else {
+        this.broadcastToExpoClients({
+          type: "send_message_status",
+          data: {
+            clientMessageId,
+            conversationId: command.conversationId,
+            status: "forwarded",
           },
         });
       }
 
-      ws.send(
-        JSON.stringify({
-          type: "ack",
-          status: forwardedToBrowser ? "success" : "error",
-          message: forwardedToBrowser
-            ? "Send message command sent to browser extension"
-            : "Browser extension is not connected; message was queued",
-        }),
-      );
+      try {
+        ws.send(
+          JSON.stringify({
+            type: "ack",
+            status: "success",
+            clientMessageId,
+            message: delivered
+              ? "Send message command sent to browser extension"
+              : "Browser extension is offline; message queued",
+          }),
+        );
+      } catch (_) {}
     } else if (msgType === "fetch_client_details") {
       const username = data.username;
       if (!username) {
@@ -4893,6 +4861,134 @@ export class MessageServer extends EventEmitter {
   /**
    * Send pending commands to client
    */
+  /**
+   * Browser extension sockets that are open, most recently active first.
+   */
+  getLiveBrowserSockets() {
+    const sockets = [];
+    for (const [sessionId, sock] of this.connectedClients.entries()) {
+      if (this.clientTypes.get(sessionId) !== "browser") continue;
+      if (!sock || sock.readyState !== 1 || sock._superseded) continue;
+      sockets.push(sock);
+    }
+    sockets.sort((a, b) => (b._lastSeenAt || 0) - (a._lastSeenAt || 0));
+    return sockets;
+  }
+
+  /**
+   * Hand a send_message command to exactly one live extension (never more, so
+   * Fiverr never gets the same message twice). Returns false when none is live.
+   */
+  dispatchSendCommand(command) {
+    const target = command.conversationId || command.username;
+    const payload = JSON.stringify({
+      type: "commands",
+      commands: [
+        { type: "activate_inbox", conversationId: target, username: target },
+        command,
+      ],
+    });
+
+    for (const sock of this.getLiveBrowserSockets()) {
+      try {
+        sock.send(payload);
+        this.trackInFlightSend(command);
+        return true;
+      } catch (_) {
+        // Try the next socket.
+      }
+    }
+    return false;
+  }
+
+  trackInFlightSend(command) {
+    if (!this.inFlightSends) this.inFlightSends = new Map();
+    const id = command.clientMessageId;
+    if (!id) return;
+    const existing = this.inFlightSends.get(id);
+    if (existing) clearTimeout(existing.timeoutId);
+    // If the extension dies mid-send, tell Expo instead of leaving it hanging.
+    const timeoutId = setTimeout(() => {
+      this.inFlightSends.delete(id);
+      this.broadcastToExpoClients({
+        type: "send_message_result",
+        data: {
+          clientMessageId: id,
+          conversationId: command.conversationId,
+          autoReply: command.autoReply === true,
+          success: false,
+          error:
+            "The Chrome extension did not confirm the send in time. Check the Fiverr tab, then retry.",
+        },
+      });
+    }, SEND_RESULT_TIMEOUT_MS);
+    this.inFlightSends.set(id, { command, timeoutId });
+  }
+
+  settleInFlightSend(clientMessageId) {
+    if (!clientMessageId || !this.inFlightSends) return;
+    const entry = this.inFlightSends.get(clientMessageId);
+    if (entry) {
+      clearTimeout(entry.timeoutId);
+      this.inFlightSends.delete(clientMessageId);
+    }
+  }
+
+  enqueuePendingSend(command) {
+    if (!Array.isArray(this.pendingSendMessages)) this.pendingSendMessages = [];
+    this.pendingSendMessages = this.pendingSendMessages.filter(
+      (item) => item.clientMessageId !== command.clientMessageId,
+    );
+    this.pendingSendMessages.push(command);
+    if (this.pendingSendMessages.length > 50) {
+      this.pendingSendMessages.splice(0, this.pendingSendMessages.length - 50);
+    }
+  }
+
+  /**
+   * Pull queued sends for a freshly connected extension. Entries older than
+   * the TTL are failed back to Expo rather than sent hours late.
+   */
+  drainPendingSends() {
+    const queue = Array.isArray(this.pendingSendMessages)
+      ? this.pendingSendMessages
+      : [];
+    this.pendingSendMessages = [];
+    const now = Date.now();
+    const commands = [];
+    for (const command of queue) {
+      if (now - (command.queuedAt || now) > PENDING_SEND_TTL_MS) {
+        this.broadcastToExpoClients({
+          type: "send_message_result",
+          data: {
+            clientMessageId: command.clientMessageId,
+            conversationId: command.conversationId,
+            autoReply: command.autoReply === true,
+            success: false,
+            error:
+              "The Chrome extension stayed offline too long, so the queued message was not sent.",
+          },
+        });
+        continue;
+      }
+      const target = command.conversationId || command.username;
+      commands.push(
+        { type: "activate_inbox", conversationId: target, username: target },
+        command,
+      );
+      this.trackInFlightSend(command);
+      this.broadcastToExpoClients({
+        type: "send_message_status",
+        data: {
+          clientMessageId: command.clientMessageId,
+          conversationId: command.conversationId,
+          status: "forwarded",
+        },
+      });
+    }
+    return commands;
+  }
+
   async sendPendingCommands(sessionId, ws) {
     const commands = [];
 
@@ -4948,20 +5044,8 @@ export class MessageServer extends EventEmitter {
       this.pendingClientListTrigger = false;
     }
 
-    if (this.pendingSendMessage) {
-      const pending = this.pendingSendMessage;
-      this.pendingSendMessage = null;
-      const pendingCommand =
-        typeof pending === "string"
-          ? { type: "send_message", message: pending }
-          : { ...pending, type: "send_message" };
-
-      // Replaying without a recipient would deliver to whichever conversation
-      // happens to be open in the browser, so drop it instead.
-      if (pendingCommand.conversationId || pendingCommand.username) {
-        commands.push(pendingCommand);
-      } else {
-      }
+    if (this.clientTypes.get(sessionId) === "browser") {
+      commands.push(...this.drainPendingSends());
     }
 
     if (this.pendingClickCommands.length > 0) {
@@ -5673,7 +5757,7 @@ export class MessageServer extends EventEmitter {
     this.pendingTrigger = false;
     this.pendingClientTrigger = false;
     this.pendingClientListTrigger = false;
-    this.pendingSendMessage = null;
+    this.pendingSendMessages = [];
     this.pendingClickCommands = [];
 
     // Close WebSocket server
@@ -5795,15 +5879,17 @@ export class MessageServer extends EventEmitter {
 
     const command = {
       type: "send_message",
+      clientMessageId: `srv_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`,
       message: messageText,
       conversationId,
       username: conversationId,
+      queuedAt: Date.now(),
     };
 
-    if (this.connectedClients.size > 0) {
-      this.broadcastCommand(command);
-    } else {
-      this.pendingSendMessage = command;
+    // broadcastCommand would reach every socket (and every extension), which
+    // could post the message more than once.
+    if (!this.dispatchSendCommand(command)) {
+      this.enqueuePendingSend(command);
     }
 
     return true;
