@@ -3106,6 +3106,89 @@ export class MessageServer extends EventEmitter {
     return targets;
   }
 
+  async findUserForPush(userId) {
+    if (userId === null || userId === undefined || userId === "") return null;
+    const coll = await this.getMongoUsersCollection();
+    if (!coll) {
+      const wanted = String(userId);
+      return (
+        Array.from(this.localUsers.values()).find(
+          (user) => this.getUserIdentifier(user) === wanted,
+        ) || null
+      );
+    }
+    const ids = [userId];
+    if (
+      typeof userId === "string" &&
+      mongoose.Types.ObjectId.isValid(userId)
+    ) {
+      ids.push(new mongoose.Types.ObjectId(userId));
+    }
+    return coll.findOne({ _id: { $in: ids } });
+  }
+
+  /**
+   * Push targets allowed to hear about this client's conversation: admins and
+   * users the client is assigned to. Devices with no known signed-in user are
+   * skipped so client messages never reach an unidentified device.
+   */
+  async getPushTargetsForClient(clientKey) {
+    if (!clientKey) return [];
+    await this.hydrateWebPushSubscriptions();
+
+    const records = [
+      ...Array.from(this.pushTokens.values()).map((record) => ({
+        ...record,
+        type: "expo",
+      })),
+      ...Array.from(this.webPushSubscriptions.values())
+        .filter((record) => record?.subscription)
+        .map((record) => ({ ...record, type: "web" })),
+    ];
+
+    const userCache = new Map();
+    const accessCache = new Map();
+    const resolveUser = async (record) => {
+      // The live socket's user is authoritative (re-login on the same device).
+      const live = record.sessionId
+        ? this.connectedClients.get(record.sessionId)
+        : null;
+      if (live?._user) return live._user;
+      const key = record.userId ? String(record.userId) : "";
+      if (!key) return null;
+      if (!userCache.has(key)) {
+        userCache.set(
+          key,
+          this.findUserForPush(record.userId).catch(() => null),
+        );
+      }
+      return userCache.get(key);
+    };
+    const canReceive = async (record) => {
+      const user = await resolveUser(record);
+      if (!user) return false;
+      const key = this.getUserIdentifier(user);
+      if (!accessCache.has(key)) {
+        accessCache.set(
+          key,
+          this.canUserAccessClient(user, clientKey).catch(() => false),
+        );
+      }
+      return accessCache.get(key);
+    };
+
+    const targets = [];
+    for (const record of records) {
+      if (!(await canReceive(record))) continue;
+      targets.push(
+        record.type === "expo"
+          ? { type: "expo", token: record.token }
+          : { type: "web", subscription: record.subscription },
+      );
+    }
+    return targets;
+  }
+
   /**
    * Send push notification for new / unread message.
    * Works for native Expo tokens and web PWA subscriptions even when closed.
@@ -3124,7 +3207,13 @@ export class MessageServer extends EventEmitter {
       isTest,
     } = messageData;
 
-    const targets = await this.getAllPushTargets();
+    // Only devices of users assigned to this client (and admins) are told
+    // about its messages. Test pushes go to every registered device.
+    const targets = isTest
+      ? await this.getAllPushTargets()
+      : await this.getPushTargetsForClient(
+          conversationId || clientUsername || username,
+        );
     if (targets.length === 0) {
       return;
     }
@@ -3242,7 +3331,9 @@ export class MessageServer extends EventEmitter {
   async sendPushNotificationForNewClient(clientInfo) {
     const { username, name } = clientInfo;
 
-    const targets = await this.getAllPushTargets();
+    const targets = await this.getPushTargetsForClient(
+      username || clientInfo.conversationId,
+    );
     if (targets.length === 0) {
       return;
     }
@@ -3417,6 +3508,19 @@ export class MessageServer extends EventEmitter {
 
         const data = JSON.parse(message.toString());
 
+        // Messages are handled concurrently, but everything sent right after
+        // "connect" (register_push_token, register_web_push, requests) needs
+        // the session id and user that connect resolves from the database.
+        if (data?.type === "connect") {
+          const connecting = this.handleMessage(data, ws);
+          ws._connectPromise = connecting.catch(() => {});
+          await connecting;
+          return;
+        }
+        if (ws._connectPromise) {
+          await ws._connectPromise;
+        }
+
         await this.handleMessage(data, ws);
       } catch (error) {
         if (!(error instanceof SyntaxError)) {
@@ -3582,6 +3686,30 @@ export class MessageServer extends EventEmitter {
           });
         }
       }
+    } else if (msgType === "send_message_status") {
+      // Progress heartbeat from the extension while a send is queued behind
+      // another one or a long message is still being typed: keep waiting for
+      // the real result instead of timing the send out.
+      if (this.clientTypes.get(ws._sessionId) !== "browser") {
+        return;
+      }
+      const status = data.data || {};
+      const entry =
+        status.clientMessageId && this.inFlightSends
+          ? this.inFlightSends.get(status.clientMessageId)
+          : null;
+      if (entry) {
+        this.trackInFlightSend(entry.command);
+      }
+      this.broadcastToExpoClients({
+        type: "send_message_status",
+        data: {
+          clientMessageId: status.clientMessageId || null,
+          conversationId: status.conversationId || null,
+          autoReply: status.autoReply === true,
+          status: String(status.status || "sending"),
+        },
+      });
     } else if (msgType === "send_message_result") {
       // Relay the extension's real send outcome so Expo can retry instead of
       // assuming a socket write meant the message reached Fiverr.
@@ -4559,7 +4687,7 @@ export class MessageServer extends EventEmitter {
     } else if (msgType === "register_push_token") {
       const pushToken = data.pushToken || data.push_token;
       if (pushToken && sessionId) {
-        const userId = ws._user?.id || ws._user?._id || null;
+        const userId = ws._user ? this.getUserIdentifier(ws._user) : null;
         this.pushTokens.set(pushToken, {
           token: pushToken,
           sessionId,
@@ -4588,7 +4716,7 @@ export class MessageServer extends EventEmitter {
       const subscription = data.subscription || data.pushSubscription;
       const endpoint = subscription?.endpoint;
       if (endpoint && subscription?.keys?.p256dh && subscription?.keys?.auth) {
-        const userId = ws._user?.id || ws._user?._id || null;
+        const userId = ws._user ? this.getUserIdentifier(ws._user) : null;
         await this.persistWebPushSubscription({
           type: "web",
           endpoint,
@@ -5191,7 +5319,8 @@ export class MessageServer extends EventEmitter {
           continue;
         } else if (
           message.type === "client_data" ||
-          message.type === "new_message_detected"
+          message.type === "new_message_detected" ||
+          message.type === "new_client_detected"
         ) {
           if (
             !this.payloadMatchesAssignedIds(message.data || {}, assignedIds)
