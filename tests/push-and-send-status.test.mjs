@@ -131,3 +131,42 @@ test("messages sent right after connect wait for it (push token is not dropped)"
   assert.ok(record, "push token must be registered");
   assert.equal(record.userId, "user-alice");
 });
+
+test("requests after connect are not held back by the stored-data dump", async () => {
+  const server = new MessageServer(0);
+  server.getUserByToken = async () => users.alice;
+  let releaseDump;
+  server.sendStoredDataToExpo = () =>
+    new Promise((resolve) => {
+      releaseDump = resolve;
+    });
+  server.broadcastExpoPresenceToBrowsers = () => {};
+  server.ensureClientListHydratedFromMongo = async () => {};
+  server.filterClientListForUser = async (_user, list) => list;
+  server.storedClientList = { clients: [{ username: "buyer1" }] };
+
+  const sent = [];
+  const handlers = {};
+  const ws = {
+    readyState: 1,
+    send(raw) {
+      sent.push(JSON.parse(raw));
+    },
+    on(event, fn) {
+      handlers[event] = fn;
+    },
+  };
+  server.handleWebSocketConnection(ws, {});
+
+  const connect = handlers.message(
+    JSON.stringify({ type: "connect", client_type: "expo", session_id: "e2", token: "t" }),
+  );
+  await handlers.message(JSON.stringify({ type: "request_client_list" }));
+
+  assert.ok(
+    sent.some((msg) => msg.type === "client_list_data"),
+    "client list must be answered while the dump is still running",
+  );
+  releaseDump();
+  await connect;
+});

@@ -3511,10 +3511,20 @@ export class MessageServer extends EventEmitter {
         // Messages are handled concurrently, but everything sent right after
         // "connect" (register_push_token, register_web_push, requests) needs
         // the session id and user that connect resolves from the database.
+        // The gate opens as soon as the session is registered — not after the
+        // stored-data dump, whose Mongo message scan would otherwise hold back
+        // request_client_list / extraction triggers for a long time.
         if (data?.type === "connect") {
-          const connecting = this.handleMessage(data, ws);
-          ws._connectPromise = connecting.catch(() => {});
-          await connecting;
+          let openGate = () => {};
+          ws._connectPromise = new Promise((resolve) => {
+            openGate = resolve;
+          });
+          ws._openConnectGate = openGate;
+          try {
+            await this.handleMessage(data, ws);
+          } finally {
+            openGate();
+          }
           return;
         }
         if (ws._connectPromise) {
@@ -3616,6 +3626,9 @@ export class MessageServer extends EventEmitter {
         });
         ws.send(confirmMessage);
       } catch (error) {}
+
+      // Session and user are known; let queued messages from this socket run.
+      ws._openConnectGate?.();
 
       // Send stored data based on client type
       if (clientType === "expo") {
