@@ -8,7 +8,6 @@ import './config/env.js';
 import { createApp, attachWebSocketServer } from './app.js';
 import { connectDatabase, disconnectDatabase, isDatabaseConnected } from './config/database.js';
 import { MessageServer } from './services/MessageServerService.js';
-import { checkPortAvailable, findProcessUsingPort, getKillPortCommand } from '../utils/serverUtils.js';
 import http from 'http';
 
 // A stray async error must not take down every WebSocket (app + extension).
