@@ -5,8 +5,9 @@
   "main": "src/server.js",
   "type": "module",
   "scripts": {
+    "prestart": "node scripts/migrate.js",
     "start": "node src/server.js",
-    "dev": "nodemon src/server.js --ignore logs/ --ignore data/",
+    "dev": "node --watch src/server.js",
     "legacy": "node server.js",
     "test:activities": "nodemon test-activities-e2e.js",
     "check:endpoints": "node check-endpoints.js",
@@ -16,7 +17,8 @@
     "db:generate": "node scripts/prisma.js generate",
     "db:push": "node scripts/prisma.js db push",
     "db:migrate": "node scripts/prisma.js migrate dev",
-    "db:deploy": "node scripts/prisma.js migrate deploy"
+    "db:deploy": "node scripts/prisma.js migrate deploy",
+    "predev": "node scripts/migrate.js"
   },
   "keywords": [
     "websocket",
