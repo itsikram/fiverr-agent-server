@@ -23,6 +23,9 @@ const __dirname = path.dirname(__filename);
 const PENDING_SEND_TTL_MS = 15 * 60 * 1000;
 // How long an extension has to report whether Fiverr accepted a send.
 const SEND_RESULT_TIMEOUT_MS = 100 * 1000;
+// Send outcomes kept for Expo apps that reconnect and ask for them.
+const RECENT_SEND_RESULT_TTL_MS = 30 * 60 * 1000;
+const RECENT_SEND_RESULTS_MAX = 500;
 
 export class MessageServer extends EventEmitter {
   constructor(port = null) {
@@ -57,6 +60,9 @@ export class MessageServer extends EventEmitter {
     this.pendingClientListTrigger = false;
     this.pendingSendMessages = [];
     this.inFlightSends = new Map();
+    // clientMessageId -> { result, at }: lets an Expo app that reconnected
+    // after a send finished still learn its outcome.
+    this.recentSendResults = new Map();
     this.pendingClickCommands = [];
     this.autoReplyConfig = null;
     this.tabReloadConfig = null;
@@ -3210,6 +3216,24 @@ export class MessageServer extends EventEmitter {
           });
         }
       }
+    } else if (msgType === "request_send_results") {
+      // An Expo app reconnected with sends still waiting for an outcome.
+      // Ids are random per send, so only the app that sent them knows them.
+      const ids = Array.isArray(data.clientMessageIds)
+        ? data.clientMessageIds.slice(0, 100)
+        : [];
+      for (const id of ids) {
+        const entry = this.recentSendResults.get(String(id));
+        if (!entry || Date.now() - entry.at > RECENT_SEND_RESULT_TTL_MS) {
+          continue;
+        }
+        try {
+          ws.send(
+            JSON.stringify({ type: "send_message_result", data: entry.result }),
+          );
+        } catch (_) {}
+      }
+      return;
     } else if (msgType === "send_message_status") {
       // Progress heartbeat from the extension while a send is queued behind
       // another one or a long message is still being typed: keep waiting for
@@ -3239,6 +3263,7 @@ export class MessageServer extends EventEmitter {
       // assuming a socket write meant the message reached Fiverr.
       const result = data.data || {};
       this.settleInFlightSend(result.clientMessageId);
+      this.recordSendResult(result);
 
       this.broadcastToExpoClients({
         type: "send_message_result",
@@ -3718,8 +3743,6 @@ export class MessageServer extends EventEmitter {
       };
 
       let statusReceived = false;
-      let reloadStatus = "idle";
-      let nextReloadAt = null;
 
       // Forward request to connected browser extensions
       for (const [sessionId, browserWs] of this.connectedClients.entries()) {
@@ -3732,15 +3755,23 @@ export class MessageServer extends EventEmitter {
         } catch (error) {}
       }
 
-      // Send back status to Expo app
+      // Reply with the last known status (with reload history) right away;
+      // the extension's fresh answer follows as reload_status_update.
       ws.send(
         JSON.stringify({
           type: "reload_status_response",
-          status: reloadStatus,
-          nextReloadAt: nextReloadAt,
+          ...(this.tabReloadStatus || { status: "idle", nextReloadAt: null }),
           extension_connected: statusReceived,
         }),
       );
+      if (this.tabReloadStatus) {
+        ws.send(
+          JSON.stringify({
+            type: "reload_status_update",
+            ...this.tabReloadStatus,
+          }),
+        );
+      }
       return;
     } else if (msgType === "request_extension_status") {
       // Check if any browser extensions are connected and report status to Expo app
@@ -3760,14 +3791,23 @@ export class MessageServer extends EventEmitter {
       }
       return;
     } else if (msgType === "reload_status_update") {
-      // Receive reload status from extension and forward to Expo app
-      const status = data.status || "idle";
-      const nextReloadAt = data.nextReloadAt || null;
+      // Receive reload status (and recent reload history) from the
+      // extension and forward it to Expo apps.
+      const history = Array.isArray(data.history)
+        ? data.history.slice(0, 20)
+        : this.tabReloadStatus?.history || [];
 
       // Store status for future requests
       this.tabReloadStatus = {
-        status,
-        nextReloadAt,
+        status: data.status || "idle",
+        enabled: typeof data.enabled === "boolean" ? data.enabled : null,
+        nextReloadAt: data.nextReloadAt || null,
+        minSeconds: Number(data.minSeconds) || null,
+        maxSeconds: Number(data.maxSeconds) || null,
+        currentUrl: data.currentUrl || null,
+        lastReload: data.lastReload || history[0] || null,
+        history,
+        stats: data.stats && typeof data.stats === "object" ? data.stats : null,
         updatedAt: new Date().toISOString(),
       };
 
@@ -3786,8 +3826,7 @@ export class MessageServer extends EventEmitter {
           expoWs.send(
             JSON.stringify({
               type: "reload_status_update",
-              status,
-              nextReloadAt,
+              ...this.tabReloadStatus,
             }),
           );
         } catch (error) {
@@ -4603,6 +4642,22 @@ export class MessageServer extends EventEmitter {
       });
     }, SEND_RESULT_TIMEOUT_MS);
     this.inFlightSends.set(id, { command, timeoutId });
+  }
+
+  recordSendResult(result) {
+    if (!result?.clientMessageId) return;
+    const now = Date.now();
+    this.recentSendResults.delete(result.clientMessageId);
+    this.recentSendResults.set(result.clientMessageId, { result, at: now });
+    for (const [id, entry] of this.recentSendResults) {
+      if (
+        this.recentSendResults.size <= RECENT_SEND_RESULTS_MAX &&
+        now - entry.at <= RECENT_SEND_RESULT_TTL_MS
+      ) {
+        break;
+      }
+      this.recentSendResults.delete(id);
+    }
   }
 
   settleInFlightSend(clientMessageId) {
