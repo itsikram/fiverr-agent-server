@@ -1,0 +1,132 @@
+// MySQL schema for the Fiverr Agent server.
+// The connection URL is built from DB_HOST, DB_PORT, DB_NAME, DB_USER and
+// DB_PASSWORD (see src/db/prisma.js and scripts/prisma.js).
+//
+// Documents that arrive from the browser extension are schemaless, so the
+// fields the server queries on are real columns and everything else is kept
+// in the `extra` JSON column.
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "mysql"
+  url      = env("DATABASE_URL")
+}
+
+model User {
+  id                   String      @id @default(cuid()) @db.VarChar(191)
+  username             String      @unique @db.VarChar(191)
+  email                String      @unique @db.VarChar(191)
+  passwordHash         String      @db.VarChar(255)
+  passwordSalt         String      @db.VarChar(255)
+  role                 String      @default("user") @db.VarChar(32)
+  passwordResetToken   String?     @db.VarChar(255)
+  passwordResetExpires DateTime?
+  authTokens           AuthToken[]
+  createdAt            DateTime    @default(now()) @map("created_at")
+  updatedAt            DateTime    @updatedAt @map("updated_at")
+
+  @@map("users")
+}
+
+model AuthToken {
+  id        Int      @id @default(autoincrement())
+  token     String   @unique @db.VarChar(255)
+  expires   DateTime
+  userId    String   @db.VarChar(191)
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  createdAt DateTime @default(now()) @map("created_at")
+
+  @@index([userId])
+  @@map("auth_tokens")
+}
+
+model Client {
+  id             String   @id @db.VarChar(255)
+  username       String?  @db.VarChar(255)
+  conversationId String?  @db.VarChar(255)
+  clientKey      String?  @db.VarChar(255)
+  extra          Json?
+  createdAt      DateTime @default(now()) @map("created_at")
+  updatedAt      DateTime @updatedAt @map("updated_at")
+
+  @@index([username])
+  @@index([conversationId])
+  @@index([clientKey])
+  @@index([updatedAt])
+  @@map("clients")
+}
+
+model Message {
+  id             String   @id @db.VarChar(512)
+  clientId       String?  @db.VarChar(255)
+  clientUsername String?  @db.VarChar(255)
+  conversationId String?  @db.VarChar(255)
+  extra          Json?
+  createdAt      DateTime @default(now()) @map("created_at")
+  updatedAt      DateTime @updatedAt @map("updated_at")
+
+  @@index([clientId])
+  @@index([clientUsername])
+  @@index([conversationId])
+  @@index([updatedAt])
+  @@map("messages")
+}
+
+// One row per (user, client) pair.
+model Assignment {
+  id        String   @id @db.VarChar(512)
+  userId    String   @db.VarChar(191)
+  clientId  String   @db.VarChar(255)
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  @@index([userId])
+  @@map("assignments")
+}
+
+model Activity {
+  id           String   @id @default(cuid()) @db.VarChar(191)
+  role         String?  @db.VarChar(32)
+  type         String?  @db.VarChar(191)
+  activityType String?  @db.VarChar(191)
+  username     String?  @db.VarChar(191)
+  userId       String?  @db.VarChar(191)
+  extra        Json?
+  createdAt    DateTime @default(now()) @map("created_at")
+  updatedAt    DateTime @updatedAt @map("updated_at")
+
+  @@index([createdAt])
+  @@index([username])
+  @@index([userId])
+  @@index([role])
+  @@map("activities")
+}
+
+model SellerProfile {
+  id        String   @id @db.VarChar(191)
+  username  String?  @db.VarChar(191)
+  extra     Json?
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  @@index([username])
+  @@map("seller_profiles")
+}
+
+model PushSubscription {
+  id           String    @id @default(cuid()) @db.VarChar(191)
+  type         String    @default("web") @db.VarChar(32)
+  endpoint     String    @unique @db.VarChar(512)
+  subscription Json
+  userId       String?   @db.VarChar(191)
+  sessionId    String?   @db.VarChar(191)
+  registeredAt DateTime?
+  createdAt    DateTime  @default(now()) @map("created_at")
+  updatedAt    DateTime  @updatedAt @map("updated_at")
+
+  @@index([type])
+  @@map("push_subscriptions")
+}

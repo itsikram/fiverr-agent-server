@@ -99,7 +99,7 @@ test("a database error during a broadcast never rejects (would crash the process
   register(server, "expo", "expo", expo);
   expo._user = { _id: "u1", email: "u1@example.com", role: "user" };
   server.getAssignedClientIds = async () => {
-    throw new Error("MongoNetworkError: connection reset");
+    throw new Error("PrismaClientKnownRequestError: connection reset");
   };
 
   await assert.doesNotReject(() =>

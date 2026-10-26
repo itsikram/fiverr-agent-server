@@ -3,7 +3,7 @@
  * End-to-End Test for Activity Tracking System
  *
  * This script tests:
- * 1. MongoDB connection and collection existence
+ * 1. MySQL connection and activities table existence
  * 2. POST /activities endpoint with sample activity data
  * 3. GET /admin/activities endpoint to retrieve activities
  * 4. Data persistence and retrieval validation
@@ -13,23 +13,16 @@
  */
 
 import dotenv from "dotenv";
-import mongoose from "mongoose";
-import { MongoClient } from "mongodb";
 import http from "http";
+import { PrismaClient } from "@prisma/client";
+import { buildDatabaseUrl } from "./src/db/prisma.js";
 
 // Load environment
 dotenv.config();
 
 const DEFAULT_PORT = 8765;
-const DEFAULT_MONGO_URI =
-  "mongodb+srv://testmailbd2026_db_user:BgAEQdfgnmdSuZKp@cluster0.gwqnbsp.mongodb.net/fiverr_agent?appName=Cluster0";
-
-const MONGO_URI = (
-  process.env.MONGODB_URI ||
-  process.env.MONGODB_URL ||
-  process.env.mongodb_url ||
-  DEFAULT_MONGO_URI
-).trim();
+const DATABASE_URL = buildDatabaseUrl();
+const maskUrl = (url) => (url || "(DB_* not set)").replace(/:([^:@]+)@/, ":****@");
 
 // Parse command line args
 const args = process.argv.slice(2);
@@ -132,44 +125,29 @@ async function httpRequest(method, path, body = null, headers = {}) {
 }
 
 // Test steps
-async function testMongoConnection() {
-  log("section", "STEP 1: Testing MongoDB Connection");
+async function testDatabaseConnection() {
+  log("section", "STEP 1: Testing MySQL Connection");
 
+  if (!DATABASE_URL) {
+    log("error", "DB_HOST, DB_NAME and DB_USER must be set");
+    return false;
+  }
+
+  const prisma = new PrismaClient({ datasourceUrl: DATABASE_URL });
   try {
-    const client = new MongoClient(MONGO_URI, {
-      serverSelectionTimeoutMS: 5000,
-    });
-    await client.connect();
-    log("success", "Connected to MongoDB");
+    await prisma.$connect();
+    log("success", "Connected to MySQL");
 
-    const db = client.db("fiverr_agent");
-    const collections = await db.listCollections().toArray();
-    const hasActivityCollection = collections.some(
-      (c) => c.name === "user_activities"
-    );
-
-    if (hasActivityCollection) {
-      log("success", "user_activities collection exists");
-    } else {
-      log("warn", "user_activities collection not found (will be created on first insert)");
-    }
-
-    // Check collection details if it exists
-    if (hasActivityCollection) {
-      const coll = db.collection("user_activities");
-      const indexInfo = await coll.getIndexes();
-      log("info", `Indexes on user_activities collection:`, indexInfo);
-
-      const count = await coll.countDocuments();
-      log("info", `Current documents in collection: ${count}`);
-    }
-
-    await client.close();
+    const count = await prisma.activity.count();
+    log("success", "activities table exists");
+    log("info", `Current rows in activities: ${count}`);
     return true;
   } catch (error) {
-    log("error", `MongoDB connection failed: ${error.message}`);
-    log("error", `URI used (with password masked): ${MONGO_URI.replace(/:([^:@]+)@/, ":****@")}`);
+    log("error", `MySQL connection failed: ${error.message}`);
+    log("error", `URL used (with password masked): ${maskUrl(DATABASE_URL)}`);
     return false;
+  } finally {
+    await prisma.$disconnect();
   }
 }
 
@@ -342,49 +320,44 @@ async function testGetActivities(authToken, userId) {
 }
 
 async function testValidateData(userId) {
-  log("section", "STEP 6: Validating Data in MongoDB");
+  log("section", "STEP 6: Validating Data in MySQL");
 
+  if (!DATABASE_URL) {
+    log("error", "DB_HOST, DB_NAME and DB_USER must be set");
+    return false;
+  }
+
+  const prisma = new PrismaClient({ datasourceUrl: DATABASE_URL });
   try {
-    const client = new MongoClient(MONGO_URI, {
-      serverSelectionTimeoutMS: 5000,
-    });
-    await client.connect();
-
-    const db = client.db("fiverr_agent");
-    const coll = db.collection("user_activities");
-
     // Query for our test user's activities
-    const activities = await coll
-      .find({
-        $or: [
-          { userId: userId },
-          { email: new RegExp(`test`, "i") },
-        ],
-      })
-      .sort({ createdAt: -1 })
-      .limit(5)
-      .toArray();
+    const activities = await prisma.activity.findMany({
+      where: {
+        OR: [{ userId: String(userId) }, { username: { contains: "test" } }],
+      },
+      orderBy: { createdAt: "desc" },
+      take: 5,
+    });
 
     if (activities.length > 0) {
       log(
         "success",
-        `Found ${activities.length} activity record(s) in MongoDB for test user`
+        `Found ${activities.length} activity record(s) in MySQL for test user`
       );
       log("info", "Activities in database:", activities);
-      await client.close();
       return true;
     } else {
-      log("warn", "No activities found in MongoDB for test user");
+      log("warn", "No activities found in MySQL for test user");
       log(
         "info",
         "This could mean: (1) The POST endpoint doesn't persist to DB, or (2) There's a slight delay"
       );
-      await client.close();
       return false;
     }
   } catch (error) {
-    log("error", `Failed to validate data in MongoDB: ${error.message}`);
+    log("error", `Failed to validate data in MySQL: ${error.message}`);
     return false;
+  } finally {
+    await prisma.$disconnect();
   }
 }
 
@@ -397,12 +370,12 @@ ${colors.bright}╔════════════════════�
 ╚════════════════════════════════════════════════════════════════╝${colors.reset}
 `);
 
-  log("info", `MongoDB URI: ${MONGO_URI.replace(/:([^:@]+)@/, ":****@")}`);
+  log("info", `Database URL: ${maskUrl(DATABASE_URL)}`);
   log("info", `Server Port: ${PORT}`);
   log("info", `Base URL: http://127.0.0.1:${PORT}`);
 
   const results = {
-    mongoConnection: false,
+    databaseConnection: false,
     serverHealth: false,
     userCreation: false,
     postActivity: false,
@@ -410,8 +383,8 @@ ${colors.bright}╔════════════════════�
     dataValidation: false,
   };
 
-  // Test MongoDB connection
-  results.mongoConnection = await testMongoConnection();
+  // Test MySQL connection
+  results.databaseConnection = await testDatabaseConnection();
 
   // Test server health
   results.serverHealth = await testServerHealth();
@@ -461,7 +434,7 @@ function printResults(results) {
 
   console.log(`
 ${colors.bright}Test Results:${colors.reset}
-${results.mongoConnection ? colors.green : colors.red}  ✓ MongoDB Connection${colors.reset}
+${results.databaseConnection ? colors.green : colors.red}  ✓ MySQL Connection${colors.reset}
 ${results.serverHealth ? colors.green : colors.red}  ✓ Server Health${colors.reset}
 ${results.userCreation ? colors.green : colors.red}  ✓ User Creation/Login${colors.reset}
 ${results.postActivity ? colors.green : colors.red}  ✓ POST /activities${colors.reset}

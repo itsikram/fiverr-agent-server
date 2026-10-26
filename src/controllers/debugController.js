@@ -1,6 +1,4 @@
-import { Client } from '../models/Client.js';
-import { Assignment } from '../models/Assignment.js';
-import { User } from '../models/User.js';
+import { getStore } from '../config/database.js';
 
 /**
  * Debug endpoint - shows raw database data
@@ -27,7 +25,8 @@ export async function debugInfo(req, res) {
     };
 
     // Get all clients
-    const allClients = await Client.find({}).limit(100);
+    const store = getStore();
+    const allClients = await store.clients.list({ limit: 100 });
     info.clients.total = allClients.length;
     
     // Show first 10 clients
@@ -42,13 +41,9 @@ export async function debugInfo(req, res) {
     }));
 
     // Check if our assigned clients exist
-    const assignedClientSearch = await Client.find({
-      $or: [
-        { _id: { $in: ['jerynadim', 'calina590', 'oliverog397', 'briana_lyn'] } },
-        { username: { $in: ['jerynadim', 'calina590', 'oliverog397', 'briana_lyn'] } },
-        { clientKey: { $in: ['jerynadim', 'calina590', 'oliverog397', 'briana_lyn'] } },
-      ],
-    });
+    const assignedClientSearch = await store.clients.findByAnyKey(
+      ['jerynadim', 'calina590', 'oliverog397', 'briana_lyn']
+    );
 
     info.assignedClientsFound = assignedClientSearch.map(c => ({
       _id: c._id,
@@ -57,12 +52,12 @@ export async function debugInfo(req, res) {
     }));
 
     // Get all assignments
-    const allAssignments = await Assignment.find({});
+    const allAssignments = await store.assignments.listAll();
     info.assignments.total = allAssignments.length;
     info.assignments.all = allAssignments.map(a => ({
       _id: a._id,
       userId: a.userId,
-      clientIds: a.clientIds,
+      clientId: a.clientId,
     }));
 
     // Get current user info
@@ -75,18 +70,16 @@ export async function debugInfo(req, res) {
       };
 
       // Try to find assignment for current user
-      const userAssignment = await Assignment.findOne({
-        $or: [
-          { userId: req.user._id?.toString() },
-          { userId: req.user.email },
-          { userId: req.user.username },
-        ],
-      });
+      let userAssignment = null;
+      for (const id of [req.user._id?.toString(), req.user.email, req.user.username]) {
+        const rows = id ? await store.assignments.listForUser(id) : [];
+        if (rows.length > 0) {
+          userAssignment = { userId: id, clientIds: rows.map((row) => row.clientId) };
+          break;
+        }
+      }
 
-      info.currentUserAssignment = userAssignment ? {
-        userId: userAssignment.userId,
-        clientIds: userAssignment.clientIds,
-      } : null;
+      info.currentUserAssignment = userAssignment;
     }
 
     res.json(info);
@@ -115,7 +108,7 @@ export async function debugFilter(req, res) {
     };
 
     // Get all clients
-    const clients = await Client.find({});
+    const clients = await getStore().clients.list();
     result.totalClients = clients.length;
 
     // Create normalized set like the filter does

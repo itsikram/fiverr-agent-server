@@ -1,41 +1,41 @@
-import mongoose from 'mongoose';
+import { getPrisma, disconnectPrisma, isDatabaseConfigured } from '../db/prisma.js';
+import { createStore } from '../db/store.js';
+
+let connected = false;
+let store = null;
 
 /**
- * Connect to MongoDB using Mongoose
+ * Connect to MySQL using Prisma
  */
-
-
-export async function connectDatabase  () {
-  const mongoUrl = process.env.MONGODB_URI ;
-  // console.log('[Database] Connecting to MongoDB...', mongoUrl);
+export async function connectDatabase() {
+  if (!isDatabaseConfigured()) {
+    console.warn('[Database] ⚠️  MySQL is not configured');
+    console.warn('[Database] ⚠️  To fix: Set DB_HOST, DB_PORT, DB_NAME, DB_USER and DB_PASSWORD in your .env file');
+    return false;
+  }
 
   try {
-    await mongoose.connect(mongoUrl, {
-      serverSelectionTimeoutMS: 5000,
-      connectTimeoutMS: 10000,
-      socketTimeoutMS: 45000,
-      retryWrites: true,
-      maxPoolSize: 10,
-    });
-
-    console.log('[Database] ✓ Connected to MongoDB successfully');
+    await getPrisma().$connect();
+    connected = true;
+    console.log('[Database] ✓ Connected to MySQL successfully');
     return true;
   } catch (error) {
-    console.warn('[Database] ⚠️  MongoDB connection failed:', error.message);
+    connected = false;
+    console.warn('[Database] ⚠️  MySQL connection failed:', error.message);
     console.warn('[Database] ⚠️  Server will start without database connection');
-    console.warn('[Database] ⚠️  To fix: Set MONGODB_URI in your .env file');
-    console.warn('[Database] ⚠️  Connection string:', (mongoUrl || '').replace(/:[^:]+@/, ':****@'));
     return false;
   }
 }
 
 /**
- * Disconnect from MongoDB
+ * Disconnect from MySQL
  */
 export async function disconnectDatabase() {
   try {
-    await mongoose.disconnect();
-    console.log('[Database] Disconnected from MongoDB');
+    await disconnectPrisma();
+    connected = false;
+    store = null;
+    console.log('[Database] Disconnected from MySQL');
   } catch (error) {
     console.error('[Database] Disconnect error:', error.message);
   }
@@ -45,5 +45,21 @@ export async function disconnectDatabase() {
  * Check database connection status
  */
 export function isDatabaseConnected() {
-  return mongoose.connection.readyState === 1;
+  return connected;
+}
+
+/**
+ * Data store backed by the shared PrismaClient.
+ * Throws when the database is not configured so callers return a 500.
+ */
+export function getStore() {
+  if (store) {
+    return store;
+  }
+  const prisma = getPrisma();
+  if (!prisma) {
+    throw new Error('Database is not configured');
+  }
+  store = createStore(prisma);
+  return store;
 }

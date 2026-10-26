@@ -1,5 +1,4 @@
-import { Client } from '../models/Client.js';
-import { Assignment } from '../models/Assignment.js';
+import { getStore } from '../config/database.js';
 import { logActivity } from '../utils/activityLogger.js';
 
 /**
@@ -28,10 +27,12 @@ async function findUserAssignments(user) {
   console.log('[Client] Searching for assignments with identifiers:', { identifiers });
 
   // Try each identifier
+  const { assignments } = getStore();
   for (const id of identifiers) {
-    const assignment = await Assignment.findOne({ userId: id });
-    if (assignment) {
-      console.log('[Client] Found assignment with userId:', { userId: id, clientIds: assignment.clientIds });
+    const rows = await assignments.listForUser(id);
+    if (rows.length > 0) {
+      const assignment = { userId: id, clientIds: rows.map((row) => row.clientId) };
+      console.log('[Client] Found assignment with userId:', assignment);
       return assignment;
     }
   }
@@ -56,7 +57,7 @@ export async function getClients(req, res) {
     });
 
     // Get all clients
-    let clients = await Client.find({ _id: { $ne: null } }).sort({ updated_at: -1 });
+    let clients = await getStore().clients.list();
     console.log('[Client] Total clients in database:', clients.length);
     
     // Log sample of clients

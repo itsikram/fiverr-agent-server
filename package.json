@@ -10,7 +10,13 @@
     "legacy": "node server.js",
     "test:activities": "nodemon test-activities-e2e.js",
     "check:endpoints": "node check-endpoints.js",
-    "test": "node --test tests/*.test.mjs"
+    "test": "node --test tests/*.test.mjs",
+    "postinstall": "node scripts/prisma.js generate",
+    "prisma": "node scripts/prisma.js",
+    "db:generate": "node scripts/prisma.js generate",
+    "db:push": "node scripts/prisma.js db push",
+    "db:migrate": "node scripts/prisma.js migrate dev",
+    "db:deploy": "node scripts/prisma.js migrate deploy"
   },
   "keywords": [
     "websocket",
@@ -23,11 +29,12 @@
     "nodemon": "^3.1.14"
   },
   "dependencies": {
+    "@prisma/client": "^6.19.3",
     "dotenv": "^16.3.1",
     "expo-server-sdk": "^3.7.0",
     "express": "^4.18.2",
-    "mongoose": "^8.24.2",
     "nodemailer": "^9.0.5",
+    "prisma": "^6.19.3",
     "web-push": "^3.6.7",
     "ws": "^8.16.0"
   },

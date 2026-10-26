@@ -8,9 +8,8 @@ const makeUser = (id) => ({
   role: "user",
 });
 
-test("login falls back to local users when MongoDB is unavailable", async () => {
+test("login falls back to local users when the database is unavailable", async () => {
   const server = new MessageServer(0);
-  server.mongodbUrl = "mongodb://example.invalid/test";
   server.localUsers = new Map([
     [
       "local-user@example.com",
@@ -23,7 +22,7 @@ test("login falls back to local users when MongoDB is unavailable", async () => 
       },
     ],
   ]);
-  server.getMongoUsersCollection = async () => null;
+  server.getStore = async () => null;
 
   const user = await server.getUserByEmail("local-user@example.com");
 
@@ -37,25 +36,19 @@ test("non-admin users only receive assigned clients", async () => {
   const assignedIds = ["client-alpha", "client-beta"];
   const assignmentDocs = [];
 
-  server.getMongoAssignmentsCollection = async () => ({
-    async deleteMany(filter) {
-      const next = [];
-      for (const doc of assignmentDocs) {
-        if (doc.userId !== filter.userId) {
-          next.push(doc);
+  server.getStore = async () => ({
+    assignments: {
+      async replaceForUser(userId, clientIds) {
+        const next = assignmentDocs.filter((doc) => doc.userId !== userId);
+        for (const clientId of clientIds) {
+          next.push({ _id: `${userId}:${clientId}`, userId, clientId });
         }
-      }
-      assignmentDocs.splice(0, assignmentDocs.length, ...next);
-    },
-    async insertMany(docs) {
-      assignmentDocs.push(...docs);
-    },
-    find(filter) {
-      return {
-        async toArray() {
-          return assignmentDocs.filter((doc) => doc.userId === filter.userId);
-        },
-      };
+        assignmentDocs.splice(0, assignmentDocs.length, ...next);
+        return true;
+      },
+      async listForUser(userId) {
+        return assignmentDocs.filter((doc) => doc.userId === userId);
+      },
     },
   });
 
@@ -90,25 +83,19 @@ test("non-admin message refreshes are filtered by assigned clients and the selec
   const user = makeUser("user-2");
   const assignmentDocs = [];
 
-  server.getMongoAssignmentsCollection = async () => ({
-    async deleteMany(filter) {
-      const next = [];
-      for (const doc of assignmentDocs) {
-        if (doc.userId !== filter.userId) {
-          next.push(doc);
+  server.getStore = async () => ({
+    assignments: {
+      async replaceForUser(userId, clientIds) {
+        const next = assignmentDocs.filter((doc) => doc.userId !== userId);
+        for (const clientId of clientIds) {
+          next.push({ _id: `${userId}:${clientId}`, userId, clientId });
         }
-      }
-      assignmentDocs.splice(0, assignmentDocs.length, ...next);
-    },
-    async insertMany(docs) {
-      assignmentDocs.push(...docs);
-    },
-    find(filter) {
-      return {
-        async toArray() {
-          return assignmentDocs.filter((doc) => doc.userId === filter.userId);
-        },
-      };
+        assignmentDocs.splice(0, assignmentDocs.length, ...next);
+        return true;
+      },
+      async listForUser(userId) {
+        return assignmentDocs.filter((doc) => doc.userId === userId);
+      },
     },
   });
 

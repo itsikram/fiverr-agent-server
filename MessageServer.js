@@ -4,16 +4,16 @@
 import { WebSocketServer } from "ws";
 import http from "http";
 import { EventEmitter } from "events";
-import mongoose from "mongoose";
 import crypto from "crypto";
 import nodemailer from "nodemailer";
 import fs from "fs";
 import path from "path";
-import { Resolver, promises as dnsPromises } from "dns";
 import { fileURLToPath } from "url";
 import { generateSessionId } from "./utils/serverUtils.js";
 import pushNotificationService from "./utils/pushNotificationService.js";
 import { withHttpLogging } from "./utils/httpLogger.js";
+import { getPrisma } from "./src/db/prisma.js";
+import { createStore } from "./src/db/store.js";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -34,30 +34,6 @@ export class MessageServer extends EventEmitter {
       port !== null
         ? parseInt(port)
         : parseInt(process.env.PORT || defaultPort);
-
-    // MongoDB configuration
-    this.mongodbUrl = this.normalizeMongoUrl(
-      (
-        process.env.mongodb_url ||
-        process.env.MONGODB_URL ||
-        process.env.MONGODB_URI ||
-        ""
-      ).trim(),
-    );
-    const envDbName = (process.env.MONGODB_DB_NAME || "").trim();
-    this.mongoDbName = envDbName || "fiverr_agent";
-    this.mongoProfilesColl = (
-      process.env.MONGODB_PROFILES_COLLECTION || "seller_profiles"
-    ).trim();
-    this.mongoClientsColl = (
-      process.env.MONGODB_CLIENTS_COLLECTION || "clients"
-    ).trim();
-    this.mongoMessagesColl = (
-      process.env.MONGODB_MESSAGES_COLLECTION || "messages"
-    ).trim();
-    this.mongoUsersColl = (
-      process.env.MONGODB_USERS_COLLECTION || "users"
-    ).trim();
 
     // Server state
     this.server = null;
@@ -104,7 +80,6 @@ export class MessageServer extends EventEmitter {
     this.sessionPushTokens = new Map(); // sessionId -> pushToken
     // Web Push subscriptions for Expo web / PWA (endpoint -> metadata)
     this.webPushSubscriptions = new Map();
-    this.mongoPushSubscriptionsCollection = null;
     this.webPushHydrated = false;
 
     // Dedupe new-client alerts (username -> last notified timestamp)
@@ -112,29 +87,21 @@ export class MessageServer extends EventEmitter {
     // Dedupe unread/message push alerts (key -> last notified timestamp)
     this.recentMessagePushAlerts = new Map();
 
-    // Seller profiles (persisted in MongoDB)
+    // Seller profiles (persisted in MySQL)
     this.sellerProfiles = new Map(); // username -> profile
     this.sellerProfile = null; // current (most recently received)
 
-    // Local fallback user storage when MongoDB is unavailable
+    // Local fallback user storage when MySQL is unavailable
     this.localUsers = new Map();
     this.localAuthTokens = new Map();
     this.localUsersFilePath = path.join(__dirname, "data", "users.json");
     this.ensureLocalUsersStore();
 
-    // MongoDB
-    this.mongoClient = null;
-    this.mongooseConnection = null;
-    this.mongoConnectionPromise = null;
-    this.mongoConnectionDisabled = false;
-    this.mongoConnectionWarningShown = false;
-    this.mongoProfilesCollection = null;
-    this.mongoUsersCollection = null;
-    this.mongoClientsCollection = null;
-    this.mongoMessagesCollection = null;
-    this.mongoAssignmentsCollection = null;
-    this.mongoActivitiesCollection = null;
-    this.mongoDb = null;
+    // MySQL (Prisma)
+    this.store = null;
+    this.storeConnectionPromise = null;
+    this.storeDisabled = false;
+    this.storeWarningShown = false;
 
     // Active client access tracking (clientKey -> { userId, userName, sessionId, accessStarted })
     this.activeClientAccess = new Map();
@@ -151,344 +118,47 @@ export class MessageServer extends EventEmitter {
     return ["true", "1", "yes"].includes(String(value || "").toLowerCase());
   }
 
-  parseMongoDbNameFromUrl(url) {
-    if (!url || typeof url !== "string") {
-      return null;
-    }
-
-    const match = url.match(/^mongodb(?:\+srv)?:\/\/[^/]+\/([^?\/]+)(?:\?|$)/i);
-    if (!match || !match[1]) {
-      return null;
-    }
-
-    const dbName = match[1].trim().replace(/\/$/, "");
-    return dbName ? decodeURIComponent(dbName) : null;
-  }
-
-  normalizeMongoUrl(url) {
-    if (!url || typeof url !== "string") {
-      return "";
-    }
-
-    let normalized = url.trim();
-    if (!normalized) {
-      return "";
-    }
-
-    const hasTlsFlag = /(?:^|[?&])(tls|ssl)=/i.test(normalized);
-    const isAtlasLike =
-      normalized.startsWith("mongodb+srv://") ||
-      /mongodb(?:\.net|\.com)/i.test(normalized) ||
-      /atlas/i.test(normalized);
-
-    if (isAtlasLike && !hasTlsFlag) {
-      const separator = normalized.includes("?") ? "&" : "?";
-      normalized = `${normalized}${separator}tls=true`;
-    }
-
-    return normalized;
-  }
-
-  async isSrvFallbackError(error) {
-    return (
-      error?.code === "ECONNREFUSED" && /querySrv/i.test(error?.message || "")
-    );
-  }
-
-  async createFallbackUriFromSrv(uri) {
-    const url = new URL(uri);
-    const resolver = new Resolver();
-    resolver.setServers(["8.8.8.8", "1.1.1.1"]);
-
-    const searchParams = new URLSearchParams(url.searchParams);
-    if (!searchParams.has("tls") && !searchParams.has("ssl")) {
-      searchParams.set("tls", "true");
-    }
-    if (!searchParams.has("retryWrites")) {
-      searchParams.set("retryWrites", "true");
-    }
-    if (!searchParams.has("authSource")) {
-      searchParams.set("authSource", "admin");
-    }
-
-    const auth = url.username
-      ? `${encodeURIComponent(url.username)}${
-          url.password ? `:${encodeURIComponent(url.password)}` : ""
-        }@`
-      : "";
-
-    const srvRecords = await new Promise((resolve, reject) => {
-      resolver.resolveSrv(`_mongodb._tcp.${url.hostname}`, (err, records) => {
-        if (err) {
-          reject(err);
-        } else {
-          resolve(records);
-        }
-      });
-    });
-
-    const hosts = srvRecords.map((record) => `${record.name}:${record.port}`);
-    const dbName = url.pathname?.slice(1) || "";
-    const searchString = searchParams.toString();
-
-    return `mongodb://${auth}${hosts.join(",")}/${dbName}${
-      searchString ? `?${searchString}` : ""
-    }`;
-  }
-
-  getMongoClientOptions() {
-    const isAtlasLike =
-      this.mongodbUrl.startsWith("mongodb+srv://") ||
-      /mongodb(?:\.net|\.com)/i.test(this.mongodbUrl) ||
-      /atlas/i.test(this.mongodbUrl);
-
-    return {
-      serverSelectionTimeoutMS: 10000,
-      connectTimeoutMS: 10000,
-      socketTimeoutMS: 20000,
-      retryWrites: true,
-      maxPoolSize: 5,
-      appName: "fiverr-agent-server",
-      dbName: this.mongoDbName,
-      tls: isAtlasLike,
-    };
-  }
-
-  async connectMongo() {
-    if (!this.mongodbUrl) {
-      if (!this.mongoConnectionWarningShown) {
-        this.mongoConnectionWarningShown = true;
-        console.error("[Database] MongoDB is not configured");
-      }
-      return null;
-    }
-
-    if (this.mongoConnectionDisabled) {
-      return null;
-    }
-
-    if (this.mongooseConnection?.readyState === 1) {
-      this.mongoClient = this.mongooseConnection;
-      this.mongoDb = this.mongooseConnection.db;
-      return this.mongooseConnection;
-    }
-
-    if (this.mongoConnectionPromise) {
-      return this.mongoConnectionPromise;
-    }
-
-    const mongoOptions = this.getMongoClientOptions();
-    this.mongoConnectionPromise = (async () => {
-      await mongoose.connect(this.mongodbUrl, mongoOptions);
-
-      this.mongooseConnection = mongoose.connection;
-      this.mongoClient = this.mongooseConnection;
-      this.mongoDb = this.mongooseConnection.db;
-      console.log("[Database] Connected to MongoDB");
-
-      this.mongooseConnection.on("error", (error) => {
-        console.error("[Database] MongoDB error:", error.message);
-      });
-      this.mongooseConnection.on("disconnected", () => {
-        console.log("[Database] Disconnected from MongoDB");
-      });
-
-      return this.mongooseConnection;
-    })().catch(async (error) => {
-      const details = error?.cause?.code || error?.code || "unknown";
-      if (
-        this.mongodbUrl?.startsWith("mongodb+srv://") &&
-        (await this.isSrvFallbackError(error))
-      ) {
-        try {
-          const fallbackUri = await this.createFallbackUriFromSrv(
-            this.mongodbUrl,
-          );
-          const safeFallbackUri = fallbackUri.replace(
-            /(mongodb:\/\/)([^:]+):([^@]+)@/,
-            "$1$2:*****@",
-          );
-
-          await mongoose.connect(fallbackUri, mongoOptions);
-
-          this.mongooseConnection = mongoose.connection;
-          this.mongoClient = this.mongooseConnection;
-          this.mongoDb = this.mongooseConnection.db;
-          console.log("[Database] Connected to MongoDB");
-
-          return this.mongooseConnection;
-        } catch (fallbackError) {
-          const fallbackDetails =
-            fallbackError?.cause?.code || fallbackError?.code || "unknown";
-        }
-      }
-
-      if (!this.mongoConnectionWarningShown) {
-        this.mongoConnectionWarningShown = true;
-        console.error("[Database] MongoDB connection failed:", error.message);
-      }
-      this.mongoConnectionDisabled = true;
-      this.mongoClient = null;
-      this.mongooseConnection = null;
-      this.mongoDb = null;
-      this.mongoProfilesCollection = null;
-      this.mongoUsersCollection = null;
-      this.mongoClientsCollection = null;
-      this.mongoMessagesCollection = null;
-      this.mongoAssignmentsCollection = null;
-      this.mongoConnectionPromise = null;
-      return null;
-    });
-
-    return this.mongoConnectionPromise;
-  }
-
   /**
-   * Get MongoDB profiles collection (lazy initialization)
+   * Data store backed by MySQL (Prisma). Returns null when DB_* is not
+   * configured or the connection failed, so callers fall back to memory.
    */
-  async getMongoProfilesCollection() {
-    if (!this.mongodbUrl) {
+  async getStore() {
+    if (this.store) {
+      return this.store;
+    }
+    if (this.storeDisabled) {
       return null;
     }
 
-    if (this.mongoProfilesCollection) {
-      return this.mongoProfilesCollection;
-    }
-
-    try {
-      await this.connectMongo();
-      if (!this.mongoDb) {
-        return null;
+    const prisma = getPrisma();
+    if (!prisma) {
+      if (!this.storeWarningShown) {
+        this.storeWarningShown = true;
+        console.error("[Database] MySQL is not configured");
       }
-
-      this.mongoProfilesCollection = this.mongoDb.collection(
-        this.mongoProfilesColl,
-      );
-
-      return this.mongoProfilesCollection;
-    } catch (error) {
-      const details = error?.cause?.code || error?.code || "unknown";
-
-      this.mongoClient = null;
-      this.mongooseConnection = null;
-      this.mongoDb = null;
-      this.mongoProfilesCollection = null;
-      this.mongoUsersCollection = null;
-      this.mongoClientsCollection = null;
-      this.mongoMessagesCollection = null;
-      this.mongoAssignmentsCollection = null;
-      return null;
-    }
-  }
-
-  /**
-   * Get MongoDB database
-   */
-  async getMongoDb() {
-    if (!this.mongodbUrl) {
       return null;
     }
 
-    try {
-      await this.connectMongo();
-      return this.mongoDb;
-    } catch (error) {
-      return null;
-    }
-  }
-
-  async getMongoClientsCollection() {
-    if (!this.mongodbUrl) {
-      return null;
-    }
-
-    if (this.mongoClientsCollection) {
-      return this.mongoClientsCollection;
-    }
-
-    const db = await this.getMongoDb();
-    if (!db) {
-      return null;
+    if (!this.storeConnectionPromise) {
+      this.storeConnectionPromise = prisma
+        .$connect()
+        .then(() => {
+          this.store = createStore(prisma);
+          console.log("[Database] Connected to MySQL");
+          return this.store;
+        })
+        .catch((error) => {
+          if (!this.storeWarningShown) {
+            this.storeWarningShown = true;
+            console.error("[Database] MySQL connection failed:", error.message);
+          }
+          this.storeDisabled = true;
+          this.storeConnectionPromise = null;
+          return null;
+        });
     }
 
-    this.mongoClientsCollection = db.collection(this.mongoClientsColl);
-    return this.mongoClientsCollection;
-  }
-
-  async getMongoMessagesCollection() {
-    if (!this.mongodbUrl) {
-      return null;
-    }
-
-    if (this.mongoMessagesCollection) {
-      return this.mongoMessagesCollection;
-    }
-
-    const db = await this.getMongoDb();
-    if (!db) {
-      return null;
-    }
-
-    this.mongoMessagesCollection = db.collection(this.mongoMessagesColl);
-    return this.mongoMessagesCollection;
-  }
-
-  async getMongoAssignmentsCollection() {
-    if (!this.mongodbUrl) {
-      return null;
-    }
-
-    if (this.mongoAssignmentsCollection) {
-      return this.mongoAssignmentsCollection;
-    }
-
-    const db = await this.getMongoDb();
-    if (!db) {
-      return null;
-    }
-
-    this.mongoAssignmentsCollection = db.collection("assignments");
-    return this.mongoAssignmentsCollection;
-  }
-
-  async getMongoActivitiesCollection() {
-    if (!this.mongodbUrl) {
-      return null;
-    }
-
-    if (this.mongoActivitiesCollection) {
-      return this.mongoActivitiesCollection;
-    }
-
-    const db = await this.getMongoDb();
-    if (!db) {
-      return null;
-    }
-
-    this.mongoActivitiesCollection = db.collection("activities");
-    return this.mongoActivitiesCollection;
-  }
-
-  async getMongoUsersCollection() {
-    if (!this.mongodbUrl) {
-      return null;
-    }
-
-    if (this.mongoUsersCollection) {
-      return this.mongoUsersCollection;
-    }
-
-    const db = await this.getMongoDb();
-    if (!db) {
-      return null;
-    }
-
-    this.mongoUsersCollection = db.collection(this.mongoUsersColl);
-    return this.mongoUsersCollection;
-  }
-
-  async getMongoUsersCollectionOrThrow() {
-    return this.getMongoUsersCollection();
+    return this.storeConnectionPromise;
   }
 
   /**
@@ -979,11 +649,11 @@ export class MessageServer extends EventEmitter {
   }
 
   async getUserById(userId) {
-    const coll = await this.getMongoUsersCollection();
-    if (!coll || !userId) {
+    const store = await this.getStore();
+    if (!store || !userId) {
       return null;
     }
-    return coll.findOne({ _id: userId });
+    return store.users.findById(userId);
   }
 
   async getAssignedClientIds(user) {
@@ -991,8 +661,8 @@ export class MessageServer extends EventEmitter {
       return [];
     }
 
-    const coll = await this.getMongoAssignmentsCollection();
-    if (!coll) {
+    const store = await this.getStore();
+    if (!store) {
       return [];
     }
 
@@ -1001,12 +671,15 @@ export class MessageServer extends EventEmitter {
       return [];
     }
 
-    const docs = await coll.find({ userId }).toArray();
+    const docs = await store.assignments.listForUser(userId);
     return docs.map((doc) => doc.clientId).filter(Boolean);
   }
 
   async setUserClientAssignments(userId, clientIds) {
-    const coll = await this.getMongoAssignmentsCollection();
+    const store = await this.getStore();
+    if (!store) {
+      return false;
+    }
     const normalizedUserId = this.getUserIdentifier({ _id: userId });
     if (!normalizedUserId) {
       return false;
@@ -1019,32 +692,17 @@ export class MessageServer extends EventEmitter {
           .map((value) => this.getUserIdentifier({ _id: value })),
       ),
     );
-    await coll.deleteMany({ userId: normalizedUserId });
-
-    if (normalizedIds.length === 0) {
-      return true;
-    }
-
-    const docs = normalizedIds.map((clientId) => ({
-      _id: `${normalizedUserId}:${clientId}`,
-      userId: normalizedUserId,
-      clientId,
-      created_at: new Date().toISOString(),
-      updated_at: new Date().toISOString(),
-    }));
-
-    await coll.insertMany(docs);
-    return true;
+    return store.assignments.replaceForUser(normalizedUserId, normalizedIds);
   }
 
   async getAssignmentsForUser(userId) {
-    const coll = await this.getMongoAssignmentsCollection();
+    const store = await this.getStore();
     const normalizedUserId = this.getUserIdentifier({ _id: userId });
-    if (!normalizedUserId) {
+    if (!store || !normalizedUserId) {
       return [];
     }
 
-    return coll.find({ userId: normalizedUserId }).toArray();
+    return store.assignments.listForUser(normalizedUserId);
   }
 
   async canUserAccessClient(user, clientKey) {
@@ -1314,9 +972,9 @@ export class MessageServer extends EventEmitter {
   }
 
   async getUserByEmail(email) {
-    const coll = await this.getMongoUsersCollection();
-    if (coll) {
-      return coll.findOne({ email: email.toLowerCase().trim() });
+    const store = await this.getStore();
+    if (store) {
+      return store.users.findByEmail(email);
     }
 
     const normalizedEmail = email.toLowerCase().trim();
@@ -1324,17 +982,9 @@ export class MessageServer extends EventEmitter {
   }
 
   async getUserByToken(token) {
-    const coll = await this.getMongoUsersCollection();
-    if (coll) {
-      const now = new Date();
-      return coll.findOne({
-        authTokens: {
-          $elemMatch: {
-            token: token,
-            expires: { $gt: now },
-          },
-        },
-      });
+    const store = await this.getStore();
+    if (store) {
+      return store.users.findByToken(token);
     }
 
     const user = Array.from(this.localUsers.values()).find((entry) =>
@@ -1346,8 +996,8 @@ export class MessageServer extends EventEmitter {
   }
 
   async addAuthTokenToUser(email, token) {
-    const coll = await this.getMongoUsersCollection();
-    if (!coll) {
+    const store = await this.getStore();
+    if (!store) {
       const normalizedEmail = email.toLowerCase().trim();
       const user = this.localUsers.get(normalizedEmail);
       if (!user) {
@@ -1363,25 +1013,12 @@ export class MessageServer extends EventEmitter {
     }
 
     const expires = new Date(Date.now() + 30 * 24 * 60 * 60 * 1000);
-    const result = await coll.updateOne(
-      { email: email.toLowerCase().trim() },
-      {
-        $push: {
-          authTokens: {
-            token,
-            expires,
-          },
-        },
-        $set: { updated_at: new Date().toISOString() },
-      },
-      { upsert: false },
-    );
-    return result.modifiedCount > 0;
+    return store.users.addAuthToken({ email }, token, expires);
   }
 
   async invalidateAuthToken(token) {
-    const coll = await this.getMongoUsersCollection();
-    if (!coll) {
+    const store = await this.getStore();
+    if (!store) {
       for (const [email, user] of this.localUsers.entries()) {
         const nextTokens = (user.authTokens || []).filter(
           (item) => item.token !== token,
@@ -1395,36 +1032,34 @@ export class MessageServer extends EventEmitter {
       return false;
     }
 
-    const result = await coll.updateOne(
-      { "authTokens.token": token },
-      { $pull: { authTokens: { token } } },
-    );
-    return result.modifiedCount > 0;
+    return store.users.removeAuthToken(token);
   }
 
   async createUser({ username, email, password }) {
-    const coll = await this.getMongoUsersCollection();
+    const store = await this.getStore();
     const normalizedEmail = email.toLowerCase().trim();
 
-    if (coll) {
-      const existingUser = await coll.findOne({ email: normalizedEmail });
+    if (store) {
+      const existingUser = await store.users.findByEmail(normalizedEmail);
       if (existingUser) {
         throw new Error("User already exists with that email");
       }
+      const existingUsername = await store.users.findByEmailOrUsername(
+        null,
+        username,
+      );
+      if (existingUsername) {
+        throw new Error("User already exists with that username");
+      }
 
       const { salt, hash } = await this.hashPassword(password);
-      const user = {
+      const user = await store.users.create({
         username: username.trim(),
         email: normalizedEmail,
         passwordHash: hash,
         passwordSalt: salt,
         role: this.isAdminEmail(normalizedEmail) ? "admin" : "user",
-        authTokens: [],
-        created_at: new Date().toISOString(),
-        updated_at: new Date().toISOString(),
-      };
-
-      await coll.insertOne(user);
+      });
       return { username: user.username, email: user.email };
     }
 
@@ -1478,13 +1113,10 @@ export class MessageServer extends EventEmitter {
       token: resetToken,
       expiresAt: resetExpires.toISOString(),
     });
-    const coll = await this.getMongoUsersCollection();
+    const store = await this.getStore();
 
-    if (coll) {
-      await coll.updateOne(
-        { email: normalizedEmail },
-        { $set: { passwordReset: resetData, updated_at: new Date().toISOString() } },
-      );
+    if (store) {
+      await store.users.update({ email: normalizedEmail }, { passwordReset: resetData });
     } else {
       user.passwordReset = resetData;
       user.updated_at = new Date().toISOString();
@@ -1542,18 +1174,11 @@ export class MessageServer extends EventEmitter {
     }
 
     const { salt, hash } = await this.hashPassword(newPassword);
-    const coll = await this.getMongoUsersCollection();
-    if (coll) {
-      await coll.updateOne(
+    const store = await this.getStore();
+    if (store) {
+      await store.users.update(
         { email: normalizedEmail },
-        {
-          $set: {
-            passwordHash: hash,
-            passwordSalt: salt,
-            passwordReset: null,
-            updated_at: new Date().toISOString(),
-          },
-        },
+        { passwordHash: hash, passwordSalt: salt, passwordReset: null },
       );
     } else {
       user.passwordHash = hash;
@@ -1834,28 +1459,22 @@ export class MessageServer extends EventEmitter {
       return;
     }
 
-    const coll = await this.getMongoClientsCollection();
-    if (!coll) {
+    const store = await this.getStore();
+    if (!store) {
       return this.sendJsonResponse(res, 200, { clients: [] });
     }
 
-    const clients = await coll
-      .find({ _id: { $ne: "client_list" } })
-      .sort({ updated_at: -1 })
-      .toArray();
+    const clients = await store.clients.list();
     return this.sendJsonResponse(res, 200, { clients });
   }
 
   async handleClients(req, res, token) {
-    const coll = await this.getMongoClientsCollection();
-    if (!coll) {
+    const store = await this.getStore();
+    if (!store) {
       return this.sendJsonResponse(res, 200, { clients: [] });
     }
 
-    const clients = await coll
-      .find({ _id: { $ne: "client_list" } })
-      .sort({ updated_at: -1 })
-      .toArray();
+    const clients = await store.clients.list();
 
     let user = null;
     if (token) {
@@ -1884,35 +1503,27 @@ export class MessageServer extends EventEmitter {
       return;
     }
 
-    const coll = await this.getMongoClientsCollection();
-    if (!coll) {
+    const store = await this.getStore();
+    if (!store) {
       return this.sendJsonResponse(res, 404, { error: "Client not found" });
     }
 
     if (req.method === "PUT") {
       const body = await this.parseJsonBody(req);
       const updateDoc = { ...body, updated_at: new Date().toISOString() };
-      const result = await coll.updateOne(
-        { _id: clientId },
-        { $set: updateDoc },
-        { upsert: false },
-      );
-      if (!result.matchedCount) {
+      const updated = await store.clients.set(clientId, updateDoc);
+      if (!updated) {
         return this.sendJsonResponse(res, 404, { error: "Client not found" });
       }
-      const updated = await coll.findOne({ _id: clientId });
       return this.sendJsonResponse(res, 200, { client: updated });
     }
 
     if (req.method === "DELETE") {
-      const result = await coll.deleteOne({ _id: clientId });
-      if (!result.deletedCount) {
+      const deleted = await store.clients.remove(clientId);
+      if (!deleted) {
         return this.sendJsonResponse(res, 404, { error: "Client not found" });
       }
-      const msgColl = await this.getMongoMessagesCollection();
-      if (msgColl) {
-        await msgColl.deleteMany({ clientId });
-      }
+      await store.messages.removeByClientId(clientId);
       return this.sendJsonResponse(res, 200, { success: true });
     }
 
@@ -1925,12 +1536,12 @@ export class MessageServer extends EventEmitter {
       return;
     }
 
-    const coll = await this.getMongoMessagesCollection();
-    if (!coll) {
+    const store = await this.getStore();
+    if (!store) {
       return this.sendJsonResponse(res, 200, { messages: [] });
     }
 
-    const messages = await coll.find({}).sort({ updated_at: -1 }).toArray();
+    const messages = await store.messages.list();
     return this.sendJsonResponse(res, 200, { messages });
   }
 
@@ -1940,14 +1551,14 @@ export class MessageServer extends EventEmitter {
       return;
     }
 
-    const coll = await this.getMongoMessagesCollection();
-    if (!coll) {
+    const store = await this.getStore();
+    if (!store) {
       return this.sendJsonResponse(res, 404, { error: "Message not found" });
     }
 
     if (req.method === "PUT") {
       const body = await this.parseJsonBody(req);
-      const existing = await coll.findOne({ _id: messageId });
+      const existing = await store.messages.findById(messageId);
       if (!existing) {
         return this.sendJsonResponse(res, 404, { error: "Message not found" });
       }
@@ -1966,15 +1577,10 @@ export class MessageServer extends EventEmitter {
         updateDoc.edited_at = new Date().toISOString();
       }
 
-      const result = await coll.updateOne(
-        { _id: messageId },
-        { $set: updateDoc },
-        { upsert: false },
-      );
-      if (!result.matchedCount) {
+      const updated = await store.messages.set(messageId, updateDoc);
+      if (!updated) {
         return this.sendJsonResponse(res, 404, { error: "Message not found" });
       }
-      const updated = await coll.findOne({ _id: messageId });
 
       // Broadcast update to connected clients
       try {
@@ -1998,13 +1604,13 @@ export class MessageServer extends EventEmitter {
     }
 
     if (req.method === "DELETE") {
-      const existing = await coll.findOne({ _id: messageId });
+      const existing = await store.messages.findById(messageId);
       if (!existing) {
         return this.sendJsonResponse(res, 404, { error: "Message not found" });
       }
 
-      const result = await coll.deleteOne({ _id: messageId });
-      if (!result.deletedCount) {
+      const deleted = await store.messages.remove(messageId);
+      if (!deleted) {
         return this.sendJsonResponse(res, 404, { error: "Message not found" });
       }
 
@@ -2035,17 +1641,13 @@ export class MessageServer extends EventEmitter {
       return;
     }
 
-    const coll = await this.getMongoUsersCollection();
+    const store = await this.getStore();
     const byKey = new Map();
 
-    if (coll) {
-      const mongoUsers = await coll
-        .find({})
-        .project({ passwordHash: 0, passwordSalt: 0, authTokens: 0 })
-        .sort({ created_at: -1 })
-        .toArray();
+    if (store) {
+      const dbUsers = await store.users.list();
 
-      mongoUsers.forEach((entry) => {
+      dbUsers.forEach((entry) => {
         const key = String(
           entry?._id || entry?.id || entry?.email || entry?.username || "",
         )
@@ -2104,12 +1706,12 @@ export class MessageServer extends EventEmitter {
       return this.sendJsonResponse(res, 200, { assignments });
     }
 
-    const coll = await this.getMongoAssignmentsCollection();
-    if (!coll) {
+    const store = await this.getStore();
+    if (!store) {
       return this.sendJsonResponse(res, 200, { assignments: [] });
     }
 
-    const assignments = await coll.find({}).sort({ updated_at: -1 }).toArray();
+    const assignments = await store.assignments.listAll();
     return this.sendJsonResponse(res, 200, { assignments });
   }
 
@@ -2140,8 +1742,8 @@ export class MessageServer extends EventEmitter {
       return;
     }
 
-    const coll = await this.getMongoActivitiesCollection();
-    if (!coll) {
+    const store = await this.getStore();
+    if (!store) {
       return this.sendJsonResponse(res, 200, { activities: [] });
     }
 
@@ -2156,31 +1758,20 @@ export class MessageServer extends EventEmitter {
       ? Math.max(1, Math.min(limitRaw, 1000))
       : 200;
 
-    const filter = { role: { $ne: "admin" } };
-    if (userId) {
-      filter.userId = userId;
-    }
-    if (activityType) {
-      filter.activityType = activityType;
-    }
-
-    const activities = await coll
-      .find(filter)
-      .sort({ created_at: -1 })
-      .limit(limit)
-      .toArray();
+    const activities = await store.activities.list({
+      excludeRole: "admin",
+      userId: userId || undefined,
+      activityType: activityType || undefined,
+      limit,
+    });
 
     return this.sendJsonResponse(res, 200, { activities });
   }
 
   async logUserActivity(req, user, activityData) {
-    if (!this.mongodbUrl) {
-      return;
-    }
-
     try {
-      const coll = await this.getMongoActivitiesCollection();
-      if (!coll) {
+      const store = await this.getStore();
+      if (!store) {
         return;
       }
 
@@ -2195,13 +1786,13 @@ export class MessageServer extends EventEmitter {
         updated_at: new Date(),
       };
 
-      await coll.insertOne(activity);
+      await store.activities.create(activity);
     } catch (error) {
     }
   }
 
   /**
-   * Load seller profiles from MongoDB or JSON file
+   * Load seller profiles from MySQL or JSON file
    */
   parseSellerProfilesFromObject(data) {
     const profiles = new Map();
@@ -2230,11 +1821,11 @@ export class MessageServer extends EventEmitter {
     return latest;
   }
 
-  async loadSellerProfilesFromMongo(coll) {
+  async loadSellerProfilesFromDb(store) {
     const profiles = new Map();
-    const cursor = coll.find({});
+    const docs = await store.sellerProfiles.list();
 
-    for await (const doc of cursor) {
+    for (const doc of docs) {
       const username =
         doc.username || (typeof doc._id === "string" ? doc._id : null);
       if (username) {
@@ -2279,15 +1870,15 @@ export class MessageServer extends EventEmitter {
   }
 
   async loadSellerProfiles() {
-    const coll = await this.getMongoProfilesCollection();
-    if (!coll) {
+    const store = await this.getStore();
+    if (!store) {
       this.sellerProfiles = new Map();
       this.sellerProfile = null;
       return;
     }
 
     try {
-      let profiles = await this.loadSellerProfilesFromMongo(coll);
+      let profiles = await this.loadSellerProfilesFromDb(store);
 
       if (profiles.size === 0) {
         const migrated = await this.migrateSellerProfilesFromJsonFiles();
@@ -2307,15 +1898,15 @@ export class MessageServer extends EventEmitter {
   }
 
   /**
-   * Save seller profiles to MongoDB
+   * Save seller profiles to MySQL
    */
   async saveSellerProfiles() {
     if (this.sellerProfiles.size === 0) {
       return;
     }
 
-    const coll = await this.getMongoProfilesCollection();
-    if (!coll) {
+    const store = await this.getStore();
+    if (!store) {
       return;
     }
 
@@ -2323,11 +1914,7 @@ export class MessageServer extends EventEmitter {
       for (const [username, doc] of this.sellerProfiles.entries()) {
         const payload = { ...doc };
         delete payload._id;
-        await coll.replaceOne(
-          { _id: username },
-          { ...payload, _id: username },
-          { upsert: true },
-        );
+        await store.sellerProfiles.replace(username, payload);
       }
     } catch (error) {}
   }
@@ -2363,17 +1950,20 @@ export class MessageServer extends EventEmitter {
     return id.toLowerCase();
   }
 
-  async loadMessagesFromMongo() {
-    const coll = await this.getMongoMessagesCollection();
-    if (!coll) {
+  async loadMessagesFromDb() {
+    const store = await this.getStore();
+    if (!store) {
       return [];
     }
 
     try {
-      const docs = await coll
-        .find({})
-        .sort({ timestamp: 1, created_at: 1 })
-        .toArray();
+      const sortKey = (value) =>
+        value instanceof Date ? value.toISOString() : String(value ?? "");
+      const docs = (await store.messages.list()).sort(
+        (left, right) =>
+          sortKey(left.timestamp).localeCompare(sortKey(right.timestamp)) ||
+          sortKey(left.created_at).localeCompare(sortKey(right.created_at)),
+      );
 
       const isGeneric = (val) => {
         if (!val) return true;
@@ -2442,20 +2032,10 @@ export class MessageServer extends EventEmitter {
         });
       }
 
-      const clientColl = await this.getMongoClientsCollection();
       const payloads = [];
 
       for (const entry of grouped.values()) {
-        let clientDoc = null;
-        if (clientColl) {
-          clientDoc = await clientColl.findOne({
-            $or: [
-              { _id: entry.conversationId },
-              { username: entry.conversationId },
-              { conversationId: entry.conversationId },
-            ],
-          });
-        }
+        const clientDoc = await store.clients.findByKey(entry.conversationId);
 
         payloads.push({
           conversationId: entry.conversationId,
@@ -2471,11 +2051,11 @@ export class MessageServer extends EventEmitter {
   }
 
   /**
-   * Save messages to MongoDB
+   * Save messages to MySQL
    */
-  async saveMessagesToMongo(data) {
-    const db = await this.getMongoDb();
-    if (!db) {
+  async saveMessagesToDb(data) {
+    const store = await this.getStore();
+    if (!store) {
       return;
     }
 
@@ -2486,8 +2066,6 @@ export class MessageServer extends EventEmitter {
     }
 
     try {
-      const coll = db.collection(this.mongoMessagesColl);
-      const clientColl = db.collection(this.mongoClientsColl);
       const clientCandidates = [data, ...(data.clients || [])].filter(Boolean);
 
       let clientDoc = null;
@@ -2500,13 +2078,7 @@ export class MessageServer extends EventEmitter {
       );
 
       for (const candidateKey of candidateKeys) {
-        const existing = await clientColl.findOne({
-          $or: [
-            { _id: candidateKey },
-            { username: candidateKey },
-            { conversationId: candidateKey },
-          ],
-        });
+        const existing = await store.clients.findByKey(candidateKey);
         if (existing) {
           clientDoc = existing;
           break;
@@ -2514,13 +2086,7 @@ export class MessageServer extends EventEmitter {
       }
 
       if (!clientDoc && conversationId) {
-        clientDoc = await clientColl.findOne({
-          $or: [
-            { _id: conversationId },
-            { username: conversationId },
-            { conversationId },
-          ],
-        });
+        clientDoc = await store.clients.findByKey(conversationId);
       }
 
       const clientId = clientDoc?._id || clientDoc?.id || null;
@@ -2591,7 +2157,7 @@ export class MessageServer extends EventEmitter {
             : `msg_${index}`;
 
         // Keep Fiverr's native id on `id` so the app can dedupe against live
-        // extracts. Use a stable conversation-scoped key for Mongo `_id`.
+        // extracts. Use a stable conversation-scoped key for the row `_id`.
         const messageId = `${safeConversationId}_${cleanMsgId}`;
         const payload = {
           ...message,
@@ -2614,21 +2180,17 @@ export class MessageServer extends EventEmitter {
           updated_at: new Date().toISOString(),
         };
 
-        await coll.updateOne(
-          { _id: payload._id },
-          { $set: payload },
-          { upsert: true },
-        );
+        await store.messages.set(payload._id, payload, { upsert: true });
       }
     } catch (error) {}
   }
 
   /**
-   * Save client data to MongoDB
+   * Save client data to MySQL
    */
-  async saveClientDataToMongo(data) {
-    const db = await this.getMongoDb();
-    if (!db) {
+  async saveClientDataToDb(data) {
+    const store = await this.getStore();
+    if (!store) {
       return;
     }
 
@@ -2638,22 +2200,17 @@ export class MessageServer extends EventEmitter {
     }
 
     try {
-      const coll = db.collection(this.mongoClientsColl);
       const payload = await this.buildClientDocument(data);
-      await coll.updateOne(
-        { _id: payload._id },
-        { $set: payload },
-        { upsert: true },
-      );
+      await store.clients.set(payload._id, payload, { upsert: true });
     } catch (error) {}
   }
 
   /**
-   * Save client list entries to MongoDB as individual client records
+   * Save client list entries to MySQL as individual client records
    */
-  async saveClientListToMongo(data) {
-    const db = await this.getMongoDb();
-    if (!db) {
+  async saveClientListToDb(data) {
+    const store = await this.getStore();
+    if (!store) {
       return;
     }
 
@@ -2663,24 +2220,19 @@ export class MessageServer extends EventEmitter {
     }
 
     try {
-      const coll = db.collection(this.mongoClientsColl);
       for (const client of clients) {
         const payload = await this.buildClientDocument(client);
         payload.updated_at = new Date().toISOString();
-        await coll.updateOne(
-          { _id: payload._id },
-          { $set: payload },
-          { upsert: true },
-        );
+        await store.clients.set(payload._id, payload, { upsert: true });
       }
     } catch (error) {}
   }
 
   /**
-   * Rebuild in-memory client list from Mongo so Expo can paint immediately
+   * Rebuild in-memory client list from MySQL so Expo can paint immediately
    * after a server restart without waiting for a full inbox scrape.
    */
-  async ensureClientListHydratedFromMongo() {
+  async ensureClientListHydratedFromDb() {
     if (
       this.storedClientList &&
       Array.isArray(this.storedClientList.clients) &&
@@ -2690,15 +2242,12 @@ export class MessageServer extends EventEmitter {
     }
 
     try {
-      const coll = await this.getMongoClientsCollection();
-      if (!coll) {
+      const store = await this.getStore();
+      if (!store) {
         return this.storedClientList;
       }
 
-      const clients = await coll
-        .find({ _id: { $ne: "client_list" } })
-        .sort({ updated_at: -1 })
-        .toArray();
+      const clients = await store.clients.list();
 
       if (!Array.isArray(clients) || clients.length === 0) {
         return this.storedClientList;
@@ -2707,7 +2256,7 @@ export class MessageServer extends EventEmitter {
       this.storedClientList = {
         clients,
         timestamp: new Date().toISOString(),
-        source: "mongo_hydrate",
+        source: "db_hydrate",
       };
       return this.storedClientList;
     } catch (_error) {
@@ -2734,7 +2283,7 @@ export class MessageServer extends EventEmitter {
   }
 
   /**
-   * Merge Mongo payloads with fresher in-memory extension extracts.
+   * Merge database payloads with fresher in-memory extension extracts.
    */
   mergeTwoMessagePayloads(left, right) {
     const base = { ...(left || {}), ...(right || {}) };
@@ -2880,8 +2429,8 @@ export class MessageServer extends EventEmitter {
       });
     }
 
-    // Save to MongoDB
-    this.saveMessagesToMongo(
+    // Save to MySQL
+    this.saveMessagesToDb(
       storageKey
         ? this.storedMessageDataByConversation.get(storageKey)
         : normalizedData,
@@ -2900,8 +2449,8 @@ export class MessageServer extends EventEmitter {
       "default";
     this.storedClientData.set(key, normalizedData);
 
-    // Save to MongoDB
-    this.saveClientDataToMongo(normalizedData).catch((err) => {});
+    // Save to MySQL
+    this.saveClientDataToDb(normalizedData).catch((err) => {});
 
     // Emit event
     this.emit("client_data_received", data);
@@ -2942,8 +2491,8 @@ export class MessageServer extends EventEmitter {
     // Store normalized data so Expo clients receive stable client IDs
     this.storedClientList = normalizedData;
 
-    // Save to MongoDB
-    this.saveClientListToMongo(normalizedData).catch((err) => {});
+    // Save to MySQL
+    this.saveClientListToDb(normalizedData).catch((err) => {});
 
     // Emit event
     this.emit("client_list_received", normalizedData);
@@ -3013,36 +2562,13 @@ export class MessageServer extends EventEmitter {
     return true;
   }
 
-  async getMongoPushSubscriptionsCollection() {
-    if (!this.mongodbUrl) return null;
-    if (this.mongoPushSubscriptionsCollection) {
-      return this.mongoPushSubscriptionsCollection;
-    }
-    try {
-      await this.connectMongo();
-      if (!this.mongoDb) return null;
-      this.mongoPushSubscriptionsCollection =
-        this.mongoDb.collection("push_subscriptions");
-      try {
-        await this.mongoPushSubscriptionsCollection.createIndex(
-          { endpoint: 1 },
-          { unique: true },
-        );
-      } catch (_) {}
-      return this.mongoPushSubscriptionsCollection;
-    } catch (error) {
-      this.mongoPushSubscriptionsCollection = null;
-      return null;
-    }
-  }
-
   async hydrateWebPushSubscriptions() {
     if (this.webPushHydrated) return;
     this.webPushHydrated = true;
     try {
-      const coll = await this.getMongoPushSubscriptionsCollection();
-      if (!coll) return;
-      const rows = await coll.find({ type: "web" }).limit(2000).toArray();
+      const store = await this.getStore();
+      if (!store) return;
+      const rows = await store.pushSubscriptions.list({ type: "web", limit: 2000 });
       for (const row of rows) {
         if (!row?.endpoint || !row?.subscription) continue;
         this.webPushSubscriptions.set(row.endpoint, {
@@ -3061,23 +2587,16 @@ export class MessageServer extends EventEmitter {
     if (!record?.endpoint || !record?.subscription) return;
     this.webPushSubscriptions.set(record.endpoint, record);
     try {
-      const coll = await this.getMongoPushSubscriptionsCollection();
-      if (!coll) return;
-      await coll.updateOne(
-        { endpoint: record.endpoint },
-        {
-          $set: {
-            type: "web",
-            endpoint: record.endpoint,
-            subscription: record.subscription,
-            userId: record.userId || null,
-            sessionId: record.sessionId || null,
-            registeredAt: record.registeredAt || Date.now(),
-            updatedAt: new Date(),
-          },
-        },
-        { upsert: true },
-      );
+      const store = await this.getStore();
+      if (!store) return;
+      await store.pushSubscriptions.upsert({
+        type: "web",
+        endpoint: record.endpoint,
+        subscription: record.subscription,
+        userId: record.userId || null,
+        sessionId: record.sessionId || null,
+        registeredAt: record.registeredAt || Date.now(),
+      });
     } catch (_) {}
   }
 
@@ -3085,9 +2604,9 @@ export class MessageServer extends EventEmitter {
     if (!endpoint) return;
     this.webPushSubscriptions.delete(endpoint);
     try {
-      const coll = await this.getMongoPushSubscriptionsCollection();
-      if (!coll) return;
-      await coll.deleteOne({ endpoint });
+      const store = await this.getStore();
+      if (!store) return;
+      await store.pushSubscriptions.removeByEndpoint(endpoint);
     } catch (_) {}
   }
 
@@ -3108,8 +2627,8 @@ export class MessageServer extends EventEmitter {
 
   async findUserForPush(userId) {
     if (userId === null || userId === undefined || userId === "") return null;
-    const coll = await this.getMongoUsersCollection();
-    if (!coll) {
+    const store = await this.getStore();
+    if (!store) {
       const wanted = String(userId);
       return (
         Array.from(this.localUsers.values()).find(
@@ -3117,14 +2636,7 @@ export class MessageServer extends EventEmitter {
         ) || null
       );
     }
-    const ids = [userId];
-    if (
-      typeof userId === "string" &&
-      mongoose.Types.ObjectId.isValid(userId)
-    ) {
-      ids.push(new mongoose.Types.ObjectId(userId));
-    }
-    return coll.findOne({ _id: { $in: ids } });
+    return store.users.findById(userId);
   }
 
   /**
@@ -3308,7 +2820,7 @@ export class MessageServer extends EventEmitter {
     // Emit event
     this.emit("new_client_detected", newClientInfo);
 
-    this.saveClientDataToMongo(newClientInfo).catch((err) => {});
+    this.saveClientDataToDb(newClientInfo).catch((err) => {});
 
     // Broadcast to Expo clients via WebSocket (if app is running)
     this.broadcastToExpoClients({
@@ -3512,7 +3024,7 @@ export class MessageServer extends EventEmitter {
         // "connect" (register_push_token, register_web_push, requests) needs
         // the session id and user that connect resolves from the database.
         // The gate opens as soon as the session is registered — not after the
-        // stored-data dump, whose Mongo message scan would otherwise hold back
+        // stored-data dump, whose database message scan would otherwise hold back
         // request_client_list / extraction triggers for a long time.
         if (data?.type === "connect") {
           let openGate = () => {};
@@ -3909,7 +3421,7 @@ export class MessageServer extends EventEmitter {
     } else if (msgType === "request_client_list") {
       const currentUser = ws._user || null;
 
-      await this.ensureClientListHydratedFromMongo();
+      await this.ensureClientListHydratedFromDb();
 
       if (this.storedClientList) {
         const filteredClientList = await this.filterClientListForUser(
@@ -3940,7 +3452,7 @@ export class MessageServer extends EventEmitter {
         currentUser &&
         this.normalizeRole(currentUser.role, currentUser) === "admin";
 
-      const persisted = await this.loadMessagesFromMongo();
+      const persisted = await this.loadMessagesFromDb();
       const inMemoryPayloads =
         this.storedMessageDataByConversation.size > 0
           ? Array.from(this.storedMessageDataByConversation.values())
@@ -4804,9 +4316,9 @@ export class MessageServer extends EventEmitter {
       currentUser &&
       this.normalizeRole(currentUser.role, currentUser) === "admin";
 
-    // Hydrate + send the client list BEFORE the heavy Mongo message scan so the
+    // Hydrate + send the client list BEFORE the heavy database message scan so the
     // web app can render the sidebar in one RTT after connect.
-    await this.ensureClientListHydratedFromMongo();
+    await this.ensureClientListHydratedFromDb();
 
     let assignedIds = [];
     if (!canShowAll) {
@@ -4896,7 +4408,7 @@ export class MessageServer extends EventEmitter {
           : this.storedMessageData && canShowAll
             ? [JSON.parse(JSON.stringify(this.storedMessageData))]
             : [];
-      const persistedMessagePayloads = await this.loadMessagesFromMongo();
+      const persistedMessagePayloads = await this.loadMessagesFromDb();
       let messagePayloads = this.mergeMessagePayloadSources(
         persistedMessagePayloads,
         snapshotMessagesFromMemory,
@@ -5971,23 +5483,10 @@ export class MessageServer extends EventEmitter {
       this.httpServer = null;
     }
 
-    // Close MongoDB connection
-    if (this.mongooseConnection) {
-      this.mongooseConnection.close().catch(() => {});
-      this.mongooseConnection = null;
-    }
-
-    if (this.mongoClient && typeof this.mongoClient.close === "function") {
-      this.mongoClient.close().catch(() => {});
-    }
-
-    this.mongoClient = null;
-    this.mongoDb = null;
-    this.mongoProfilesCollection = null;
-    this.mongoUsersCollection = null;
-    this.mongoClientsCollection = null;
-    this.mongoMessagesCollection = null;
-    this.mongoAssignmentsCollection = null;
+    // Drop the store reference; the shared Prisma client is disconnected by
+    // the process shutdown handler.
+    this.store = null;
+    this.storeConnectionPromise = null;
   }
 
   /**

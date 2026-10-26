@@ -141,7 +141,7 @@ test("requests after connect are not held back by the stored-data dump", async (
       releaseDump = resolve;
     });
   server.broadcastExpoPresenceToBrowsers = () => {};
-  server.ensureClientListHydratedFromMongo = async () => {};
+  server.ensureClientListHydratedFromDb = async () => {};
   server.filterClientListForUser = async (_user, list) => list;
   server.storedClientList = { clients: [{ username: "buyer1" }] };
 

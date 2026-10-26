@@ -1,4 +1,4 @@
-import { User } from '../models/User.js';
+import { getStore } from '../config/database.js';
 
 /**
  * Extract token from Authorization header
@@ -17,16 +17,7 @@ export async function verifyToken(token) {
   }
 
   try {
-    const user = await User.findOne({
-      authTokens: {
-        $elemMatch: {
-          token,
-          expires: { $gt: new Date() },
-        },
-      },
-    });
-
-    return user;
+    return await getStore().users.findByToken(token);
   } catch (error) {
     console.error('[Auth] Token verification failed:', error.message);
     return null;

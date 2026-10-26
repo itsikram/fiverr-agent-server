@@ -18,7 +18,7 @@ Added the `/me/assignments` endpoint at the top level in `src/app.js` (Express a
 
 ## How It Works
 1. Non-admin users request `/me/assignments` with their authentication token
-2. The endpoint validates the user and fetches their client assignments from MongoDB
+2. The endpoint validates the user and fetches their client assignments from MySQL
 3. Returns `{ clientIds: [...] }` to the frontend
 4. Frontend uses these IDs to filter the clients list
 5. Clients are filtered both on the frontend and via the `/clients` endpoint on the backend

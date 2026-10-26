@@ -1,15 +1,11 @@
-import { User } from '../models/User.js';
-import { Client } from '../models/Client.js';
-import { Message } from '../models/Message.js';
-import { Assignment } from '../models/Assignment.js';
-import { Activity } from '../models/Activity.js';
+import { getStore } from '../config/database.js';
 
 /**
  * Get all users (admin only)
  */
 export async function listUsers(req, res) {
   try {
-    const users = await User.find({}).select('-passwordHash -passwordSalt -authTokens').sort({ created_at: -1 });
+    const users = await getStore().users.list();
     console.log('[Admin] List users', { count: users.length });
     res.json({ users });
   } catch (error) {
@@ -25,7 +21,7 @@ export async function listClients(req, res) {
     res.set('Pragma', 'no-cache');
     res.set('Expires', '0');
     
-    const clients = await Client.find({ _id: { $ne: null } }).sort({ created_at: -1 }).lean();
+    const clients = await getStore().clients.list({ orderBy: 'created_at' });
     
     // Ensure timestamps are included in response
     const clientsWithTimestamps = clients.map(c => ({
@@ -52,7 +48,7 @@ export async function getClientById(req, res) {
       return res.status(400).json({ error: 'Missing client ID' });
     }
 
-    const client = await Client.findOne({ _id: clientId });
+    const client = await getStore().clients.findById(clientId);
     if (!client) {
       return res.status(404).json({ error: 'Client not found' });
     }
@@ -78,9 +74,7 @@ export async function updateClientById(req, res) {
 
     const updateDoc = { ...body, updated_at: new Date() };
 
-    await Client.updateOne({ _id: clientId }, { $set: updateDoc }, { upsert: true });
-
-    const updated = await Client.findOne({ _id: clientId });
+    const updated = await getStore().clients.set(clientId, updateDoc, { upsert: true });
 
     res.json({ success: true, client: updated });
   } catch (error) {
@@ -94,7 +88,7 @@ export async function updateClientById(req, res) {
  */
 export async function listMessages(req, res) {
   try {
-    const messages = await Message.find({}).sort({ updated_at: -1 });
+    const messages = await getStore().messages.list();
     res.json({ messages });
   } catch (error) {
     console.error('[Admin] List messages error:', error);
@@ -113,7 +107,7 @@ export async function getMessageById(req, res) {
       return res.status(400).json({ error: 'Missing message ID' });
     }
 
-    const message = await Message.findOne({ _id: messageId });
+    const message = await getStore().messages.findById(messageId);
     if (!message) {
       return res.status(404).json({ error: 'Message not found' });
     }
@@ -139,9 +133,7 @@ export async function updateMessageById(req, res) {
 
     const updateDoc = { ...body, updated_at: new Date() };
 
-    await Message.updateOne({ _id: messageId }, { $set: updateDoc }, { upsert: true });
-
-    const updated = await Message.findOne({ _id: messageId });
+    const updated = await getStore().messages.set(messageId, updateDoc, { upsert: true });
 
     res.json({ success: true, message: updated });
   } catch (error) {
@@ -163,27 +155,13 @@ export async function setAssignments(req, res) {
       return res.status(400).json({ error: 'Missing user ID' });
     }
 
-    const normalizedIds = (clientIds || []).map((id) => ({ _id: id }));
+    const store = getStore();
+    await store.assignments.replaceForUser(userId, clientIds || []);
 
-    const result = await Assignment.updateOne(
-      { userId },
-      {
-        $set: {
-          userId,
-          clientIds: clientIds || [],
-          updated_at: new Date(),
-        },
-      },
-      { upsert: true }
-    );
+    console.log('[Admin] Assignment saved:', { userId, clientIds });
 
-    console.log('[Admin] Assignment saved:', { 
-      userId, 
-      clientIds,
-      updateResult: result 
-    });
-
-    const assignments = await Assignment.find({ userId });
+    const rows = await store.assignments.listForUser(userId);
+    const assignments = [{ userId, clientIds: rows.map((row) => row.clientId) }];
 
     console.log('[Admin] Verification - assignments in DB:', assignments);
 
@@ -205,10 +183,10 @@ export async function getAssignments(req, res) {
       return res.status(400).json({ error: 'Missing user ID' });
     }
 
-    const assignments = await Assignment.findOne({ userId });
+    const rows = await getStore().assignments.listForUser(userId);
 
     res.json({
-      clientIds: assignments?.clientIds || [],
+      clientIds: rows.map((row) => row.clientId),
     });
   } catch (error) {
     console.error('[Admin] Get assignments error:', error);
@@ -223,18 +201,16 @@ export async function getActivities(req, res) {
   try {
     const { userId, activityType, limit = 50 } = req.query;
 
-    const filter = { role: { $ne: 'admin' } };
-
-    if (userId) filter.username = userId;
-    if (activityType) filter.type = activityType;
-
-    const activities = await Activity.find(filter)
-      .sort({ created_at: -1 })
-      .limit(Math.min(parseInt(limit) || 50, 500));
+    const activities = await getStore().activities.list({
+      excludeRole: 'admin',
+      username: userId || undefined,
+      type: activityType || undefined,
+      limit: Math.min(parseInt(limit) || 50, 500),
+    });
 
     // Map 'type' to 'activityType' for frontend compatibility
     const formattedActivities = activities.map(activity => ({
-      ...activity.toObject(),
+      ...activity,
       activityType: activity.type,
     }));
 

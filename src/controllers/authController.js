@@ -1,6 +1,5 @@
 import crypto from 'crypto';
-import { User } from '../models/User.js';
-import { Activity } from '../models/Activity.js';
+import { getStore } from '../config/database.js';
 import { emailService } from '../services/EmailService.js';
 import { logActivity } from '../utils/activityLogger.js';
 
@@ -47,7 +46,8 @@ export async function register(req, res) {
     }
 
     // Check if user exists
-    let user = await User.findOne({ $or: [{ email }, { username }] });
+    const { users, activities } = getStore();
+    let user = await users.findByEmailOrUsername(email, username);
     if (user) {
       return res.status(409).json({ error: 'User already exists' });
     }
@@ -56,38 +56,27 @@ export async function register(req, res) {
     const { salt, hash } = await hashPassword(password);
 
     // Create user
-    user = new User({
+    user = await users.create({
       username,
       email,
       passwordHash: hash,
       passwordSalt: salt,
       role: 'user',
-      authTokens: [],
     });
-
-    await user.save();
 
     // Generate token
     const token = generateAuthToken();
     const expires = new Date(Date.now() + 30 * 24 * 60 * 60 * 1000); // 30 days
 
-    await User.updateOne(
-      { _id: user._id },
-      {
-        $push: {
-          authTokens: { token, expires },
-        },
-      }
-    );
+    await users.addAuthToken({ id: user._id }, token, expires);
 
     // Log activity for user registration
-    const activity = new Activity({
+    await activities.create({
       type: 'registration',
       username: user.username,
       role: user.role,
       data: { email: user.email },
     });
-    await activity.save();
 
     res.status(201).json({
       success: true,
@@ -114,7 +103,8 @@ export async function login(req, res) {
     }
 
     // Find user
-    const user = await User.findOne({ email });
+    const { users, activities } = getStore();
+    const user = await users.findByEmail(email);
     if (!user) {
       return res.status(401).json({ error: 'Invalid email or password' });
     }
@@ -129,24 +119,16 @@ export async function login(req, res) {
     const token = generateAuthToken();
     const expires = new Date(Date.now() + 30 * 24 * 60 * 60 * 1000); // 30 days
 
-    await User.updateOne(
-      { _id: user._id },
-      {
-        $push: {
-          authTokens: { token, expires },
-        },
-      }
-    );
+    await users.addAuthToken({ id: user._id }, token, expires);
 
     // Log activity for login
     if (user.role !== 'admin') {
-      const activity = new Activity({
+      await activities.create({
         type: 'login',
         username: user.username,
         role: user.role,
         data: { email: user.email },
       });
-      await activity.save();
     }
 
     res.json({
@@ -194,14 +176,7 @@ export async function logout(req, res) {
     }
 
     // Invalidate token
-    await User.updateOne(
-      { _id: req.user._id },
-      {
-        $pull: {
-          authTokens: { token: req.query.token || '' },
-        },
-      }
-    );
+    await getStore().users.removeAuthToken(req.query.token || '', req.user._id);
 
     res.json({
       success: true,
@@ -225,7 +200,8 @@ export async function requestPasswordReset(req, res) {
     }
 
     // Find user
-    const user = await User.findOne({ email });
+    const { users } = getStore();
+    const user = await users.findByEmail(email);
     if (!user) {
       // Don't reveal if email exists (security best practice)
       return res.status(200).json({
@@ -244,8 +220,8 @@ export async function requestPasswordReset(req, res) {
     });
 
     // Save reset token to user
-    await User.updateOne(
-      { _id: user._id },
+    await users.update(
+      { id: user._id },
       {
         passwordReset: {
           token: resetToken,
@@ -292,7 +268,8 @@ export async function resetPassword(req, res) {
     }
 
     // Find user
-    const user = await User.findOne({ email });
+    const { users } = getStore();
+    const user = await users.findByEmail(email);
     if (!user) {
       return res.status(401).json({ error: 'Invalid email or reset token' });
     }
@@ -310,8 +287,8 @@ export async function resetPassword(req, res) {
     const { salt, hash } = await hashPassword(newPassword);
 
     // Update password and clear reset token
-    await User.updateOne(
-      { _id: user._id },
+    await users.update(
+      { id: user._id },
       {
         passwordHash: hash,
         passwordSalt: salt,

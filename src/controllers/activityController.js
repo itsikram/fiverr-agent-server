@@ -1,4 +1,4 @@
-import { Activity } from '../models/Activity.js';
+import { getStore } from '../config/database.js';
 
 /**
  * Record user activity
@@ -16,14 +16,12 @@ export async function recordActivity(req, res) {
       return res.status(400).json({ error: 'Missing activity type' });
     }
 
-    const activity = new Activity({
+    const activity = await getStore().activities.create({
       type: activityType,
       username: req.user.username,
       role: req.user.role,
       data: req.body.data || req.body,
     });
-
-    await activity.save();
 
     res.json({ success: true, activity });
   } catch (error) {
@@ -41,9 +39,10 @@ export async function getUserActivities(req, res) {
       return res.status(401).json({ error: 'Not authenticated' });
     }
 
-    const activities = await Activity.find({ username: req.user.username })
-      .sort({ created_at: -1 })
-      .limit(100);
+    const activities = await getStore().activities.list({
+      username: req.user.username,
+      limit: 100,
+    });
 
     res.json({ activities });
   } catch (error) {

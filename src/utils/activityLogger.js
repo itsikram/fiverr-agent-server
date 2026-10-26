@@ -1,4 +1,4 @@
-import { Activity } from '../models/Activity.js';
+import { getStore } from '../config/database.js';
 
 /**
  * Log a user activity to the database
@@ -13,14 +13,12 @@ export async function logActivity(req, type, data = {}) {
       return;
     }
 
-    const activity = new Activity({
+    await getStore().activities.create({
       type,
       username: req.user.username,
       role: req.user.role,
       data,
     });
-
-    await activity.save();
   } catch (error) {
     // Log errors but don't throw - activity logging should not break the main operation
     console.error('[ActivityLogger] Error logging activity:', error);
