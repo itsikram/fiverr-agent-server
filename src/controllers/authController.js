@@ -1,5 +1,6 @@
 import crypto from 'crypto';
 import { getStore } from '../config/database.js';
+import { isAdminEmail, ensureAdminRole } from '../config/admin.js';
 import { emailService } from '../services/EmailService.js';
 import { logActivity } from '../utils/activityLogger.js';
 
@@ -61,7 +62,7 @@ export async function register(req, res) {
       email,
       passwordHash: hash,
       passwordSalt: salt,
-      role: 'user',
+      role: isAdminEmail(email) ? 'admin' : 'user',
     });
 
     // Generate token
@@ -114,6 +115,8 @@ export async function login(req, res) {
     if (!isValid) {
       return res.status(401).json({ error: 'Invalid email or password' });
     }
+
+    await ensureAdminRole(users, user);
 
     // Generate token
     const token = generateAuthToken();

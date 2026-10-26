@@ -1,4 +1,5 @@
 import { getStore } from '../config/database.js';
+import { ensureAdminRole } from '../config/admin.js';
 
 /**
  * Extract token from Authorization header
@@ -17,7 +18,8 @@ export async function verifyToken(token) {
   }
 
   try {
-    return await getStore().users.findByToken(token);
+    const { users } = getStore();
+    return await ensureAdminRole(users, await users.findByToken(token));
   } catch (error) {
     console.error('[Auth] Token verification failed:', error.message);
     return null;

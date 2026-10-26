@@ -14,6 +14,7 @@ import pushNotificationService from "./utils/pushNotificationService.js";
 import { withHttpLogging } from "./utils/httpLogger.js";
 import { getPrisma } from "./src/db/prisma.js";
 import { createStore } from "./src/db/store.js";
+import { isAdminEmail } from "./src/config/admin.js";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -276,9 +277,7 @@ export class MessageServer extends EventEmitter {
   }
 
   isAdminEmail(email) {
-    return (
-      (email || "").toString().trim().toLowerCase() === "mdikram295@gmail.com"
-    );
+    return isAdminEmail(email);
   }
 
   normalizeRole(role, user = null) {
