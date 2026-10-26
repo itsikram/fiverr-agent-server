@@ -6,8 +6,33 @@
 import { Expo } from 'expo-server-sdk';
 import webpush from 'web-push';
 
-const DEFAULT_VAPID_SUBJECT =
-  process.env.VAPID_SUBJECT || 'mailto:admin@fiverr-agent.local';
+// Apple's push service (web.push.apple.com, used by iOS home-screen PWAs)
+// rejects the VAPID JWT with 403 BadJwtToken unless `sub` is a real
+// mailto: address or https: URL. Chrome/FCM are lenient, so a bad subject
+// only breaks iOS.
+const INVALID_SUBJECT_HOST = /(^|\.)(localhost|local|localdomain|invalid|test|example)$/i;
+
+function isValidVapidSubject(subject) {
+  if (!subject) return false;
+  const mailto = /^mailto:[^@\s:]+@([^@\s]+\.[a-z]{2,})$/i.exec(subject);
+  if (mailto) return !INVALID_SUBJECT_HOST.test(mailto[1]);
+  try {
+    const url = new URL(subject);
+    return url.protocol === 'https:' && !INVALID_SUBJECT_HOST.test(url.hostname);
+  } catch {
+    return false;
+  }
+}
+
+// Read at call time: server.js runs dotenv.config() after its imports.
+function resolveVapidSubject() {
+  const candidates = [
+    process.env.VAPID_SUBJECT,
+    process.env.FRONTEND_URL,
+    process.env.SERVER_URL,
+  ].map((value) => String(value || '').trim());
+  return candidates.find(isValidVapidSubject) || null;
+}
 
 class PushNotificationService {
   constructor() {
@@ -24,8 +49,20 @@ class PushNotificationService {
       return false;
     }
 
+    const subject = resolveVapidSubject();
+    if (!subject) {
+      if (!this.warnedInvalidSubject) {
+        this.warnedInvalidSubject = true;
+        console.warn(
+          '[Push] VAPID_SUBJECT must be a real mailto: address or https: URL (e.g. mailto:you@gmail.com). Web push is disabled; iOS rejects invalid subjects.'
+        );
+      }
+      this.vapidConfigured = false;
+      return false;
+    }
+
     try {
-      webpush.setVapidDetails(DEFAULT_VAPID_SUBJECT, publicKey, privateKey);
+      webpush.setVapidDetails(subject, publicKey, privateKey);
       this.vapidPublicKey = publicKey;
       this.vapidConfigured = true;
       return true;
@@ -127,6 +164,11 @@ class PushNotificationService {
       return { success: true, channel: 'web' };
     } catch (error) {
       const statusCode = error?.statusCode || error?.status;
+      console.warn(
+        `[Push] Web push failed (${statusCode || 'no status'}) for ${
+          String(subscription.endpoint).split('/')[2]
+        }: ${error?.body || error?.message || 'unknown error'}`
+      );
       return {
         success: false,
         error: error?.message || 'Web push failed',
