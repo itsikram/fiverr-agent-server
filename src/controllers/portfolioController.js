@@ -93,6 +93,9 @@ export function sanitizePortfolioInput(body = {}, { partial = false } = {}) {
     featured: () => Boolean(body.featured),
     isPublic: () => Boolean(body.isPublic),
     showClientName: () => Boolean(body.showClientName),
+    // Set when the app adds a completed order automatically.
+    autoAdded: () => Boolean(body.autoAdded),
+    sourceKey: () => cleanText(body.sourceKey, 255) || null,
   };
 
   const result = {};
@@ -191,6 +194,16 @@ export async function createPortfolioItem(req, res) {
       where: { userId: ownerId(req.user) },
       limit: MAX_ITEMS_PER_USER,
     });
+
+    // Auto-added orders are idempotent: the same order never adds twice,
+    // even when several devices notice it.
+    if (fields.sourceKey) {
+      const duplicate = existing.find((item) => item.sourceKey === fields.sourceKey);
+      if (duplicate) {
+        return res.status(200).json({ item: duplicate, duplicate: true });
+      }
+    }
+
     if (existing.length >= MAX_ITEMS_PER_USER) {
       return res.status(400).json({ error: `Portfolio is limited to ${MAX_ITEMS_PER_USER} projects` });
     }

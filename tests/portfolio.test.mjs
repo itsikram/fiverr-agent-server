@@ -176,3 +176,35 @@ test("public portfolio shows only public projects and hides client identity", as
     await app.close();
   }
 });
+
+test("auto-added projects with the same sourceKey are created once", async () => {
+  const app = await startApp();
+  try {
+    const body = {
+      title: "Landing page",
+      task: "Built a landing page",
+      autoAdded: true,
+      sourceKey: "auto:conv-1:abc",
+      isPublic: true,
+    };
+    const first = await app.call("POST", "/portfolio", { token: "t1", body });
+    assert.equal(first.status, 201);
+    assert.equal(first.data.item.autoAdded, true);
+
+    const second = await app.call("POST", "/portfolio", { token: "t1", body });
+    assert.equal(second.status, 200);
+    assert.equal(second.data.duplicate, true);
+    assert.equal(second.data.item._id, first.data.item._id);
+
+    const otherUser = await app.call("POST", "/portfolio", { token: "t2", body });
+    assert.equal(otherUser.status, 201);
+
+    assert.equal((await app.call("GET", "/portfolio", { token: "t1" })).data.items.length, 1);
+
+    const publicItem = (await app.call("GET", "/portfolio/public/alice")).data.items[0];
+    assert.equal("sourceKey" in publicItem, false);
+    assert.equal("autoAdded" in publicItem, false);
+  } finally {
+    await app.close();
+  }
+});
