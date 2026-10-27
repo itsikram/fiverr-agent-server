@@ -199,6 +199,14 @@ function createUserStore(prisma) {
       return userToDoc(await prisma.user.findUnique({ where: { email: normalized }, include }));
     },
 
+    async findByUsername(username) {
+      const value = toStringOrNull(username);
+      if (!value) {
+        return null;
+      }
+      return userToDoc(await prisma.user.findUnique({ where: { username: value }, include }));
+    },
+
     async findByEmailOrUsername(email, username) {
       const or = [];
       if (email) or.push({ email: String(email).toLowerCase().trim() });
@@ -432,6 +440,7 @@ function createPushSubscriptionStore(prisma) {
 const CLIENT_COLUMNS = ['username', 'conversationId', 'clientKey'];
 const MESSAGE_COLUMNS = ['clientId', 'clientUsername', 'conversationId'];
 const SELLER_PROFILE_COLUMNS = ['username'];
+const PORTFOLIO_COLUMNS = ['userId', 'clientId', 'clientUsername'];
 
 /**
  * Build the store for a PrismaClient.
@@ -446,6 +455,7 @@ export function createStore(prisma) {
     activities: createActivityStore(prisma),
     pushSubscriptions: createPushSubscriptionStore(prisma),
     sellerProfiles: createDocumentStore(prisma.sellerProfile, SELLER_PROFILE_COLUMNS),
+    portfolio: createDocumentStore(prisma.portfolioItem, PORTFOLIO_COLUMNS),
 
     clients: {
       ...clientDocs,

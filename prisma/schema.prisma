@@ -130,3 +130,19 @@ model PushSubscription {
   @@index([type])
   @@map("push_subscriptions")
 }
+
+// Finished client work the seller showcases. Website, task, skills and the
+// rest of the card live in `extra`.
+model PortfolioItem {
+  id             String   @id @db.VarChar(191)
+  userId         String?  @db.VarChar(191)
+  clientId       String?  @db.VarChar(255)
+  clientUsername String?  @db.VarChar(255)
+  extra          Json?
+  createdAt      DateTime @default(now()) @map("created_at")
+  updatedAt      DateTime @updatedAt @map("updated_at")
+
+  @@index([userId])
+  @@index([clientUsername])
+  @@map("portfolio_items")
+}

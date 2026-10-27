@@ -7,6 +7,7 @@ import clientRoutes from './routes/clientRoutes.js';
 import adminRoutes from './routes/adminRoutes.js';
 import activityRoutes from './routes/activityRoutes.js';
 import pushRoutes from './routes/pushRoutes.js';
+import portfolioRoutes from './routes/portfolioRoutes.js';
 import { authenticate } from './middleware/auth.js';
 import { getMyAssignments } from './controllers/clientController.js';
 
@@ -59,6 +60,7 @@ export function createApp() {
   app.use('/admin', adminRoutes);
   app.use('/activities', activityRoutes);
   app.use('/push', pushRoutes);
+  app.use('/portfolio', portfolioRoutes);
 
   // 404 handler
   app.use((req, res) => {

@@ -49,6 +49,13 @@ export function isDatabaseConnected() {
 }
 
 /**
+ * Replace the store (tests use an in-memory one). Pass null to reset.
+ */
+export function setStore(nextStore) {
+  store = nextStore;
+}
+
+/**
  * Data store backed by the shared PrismaClient.
  * Throws when the database is not configured so callers return a 500.
  */
