@@ -1,0 +1,110 @@
+# Publishes this repo to the GoDaddy Node.js app "Fiverr agent server" (47m9q3auwh) on every
+# push to main: the GoDaddy Hosting API pulls the branch through the app's
+# GitHub Sync (same as "Update Preview"), then publishes it ("Publish to Live").
+# Needs one repository secret, GODADDY_PAT: a GoDaddy Personal Access Token with
+# hosting.application:read, hosting.source:write and hosting.deployment:execute.
+name: Deploy to GoDaddy
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+# One deploy at a time; a newer push waits instead of cancelling a publish.
+concurrency:
+  group: deploy-godaddy
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  deploy:
+    name: Sync and publish
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    env:
+      APP_ID: 47m9q3auwh
+      BRANCH: main
+      GODADDY_PAT: ${{ secrets.GODADDY_PAT }}
+    steps:
+      - name: Import from GitHub and publish
+        run: |
+          set -euo pipefail
+          API=https://api.godaddy.com/v1/hosting
+          RESP="$RUNNER_TEMP/godaddy-response.json"
+
+          if [ -z "${GODADDY_PAT:-}" ]; then
+            echo "::error::Missing secret GODADDY_PAT. Create a GoDaddy Personal Access Token with the scopes hosting.application:read, hosting.source:write and hosting.deployment:execute, then add it under Settings > Secrets and variables > Actions."
+            exit 1
+          fi
+
+          # call METHOD PATH [JSON_BODY [IDEMPOTENCY_KEY]] -> prints the HTTP status, body in $RESP
+          call() {
+            local args=(-sS -o "$RESP" -w '%{http_code}' -X "$1" "$API$2"
+              -H "Authorization: Bearer $GODADDY_PAT" -H "Accept: application/json")
+            if [ $# -ge 3 ]; then
+              args+=(-H "Content-Type: application/json" -H "Idempotency-Key: $4" -d "$3")
+            fi
+            curl "${args[@]}" 2>/dev/null || echo 000
+          }
+
+          # post PATH JSON_BODY -> retries busy/rate-limited/server errors with one idempotency key
+          post() {
+            local key code
+            key=$(cat /proc/sys/kernel/random/uuid)
+            for attempt in $(seq 1 12); do
+              code=$(call POST "$1" "$2" "$key")
+              case $code in
+                2??) return 0 ;;
+                000|409|429|5??) echo "POST $1: HTTP $code (attempt $attempt), retrying in 30s"; sleep 30 ;;
+                *) echo "::error::POST $1 failed with HTTP $code: $(cat "$RESP")"; exit 1 ;;
+              esac
+            done
+            echo "::error::POST $1 still failing (HTTP $code): $(cat "$RESP")"; exit 1
+          }
+
+          # wait_for PATH LABEL -> polls until status is COMPLETED (ok) or a failure state
+          wait_for() {
+            local code status
+            for _ in $(seq 1 160); do
+              code=$(call GET "$1")
+              if [[ $code == 2?? ]]; then
+                status=$(jq -r '.status // "UNKNOWN"' "$RESP")
+                case $status in
+                  COMPLETED|SUCCEEDED) echo "$2: $status (git $(jq -r '.gitHash // "?"' "$RESP" | cut -c1-7))"; return 0 ;;
+                  FAILED|ERROR|CANCELED|CANCELLED|REJECTED)
+                    echo "::error::$2 $status: $(jq -c '.error // .' "$RESP")"; return 1 ;;
+                  *) echo "$2: $status" ;;
+                esac
+              else
+                echo "$2: status check returned HTTP $code"
+              fi
+              sleep 15
+            done
+            echo "::error::$2 did not finish within 40 minutes."; return 1
+          }
+
+          echo "Importing $GITHUB_REPOSITORY@$BRANCH into GoDaddy app $APP_ID"
+          post "/apps/$APP_ID/imports" "$(jq -nc --arg r "$GITHUB_REPOSITORY" --arg b "$BRANCH" '{repositoryFullName:$r, branch:$b}')"
+          import_id=$(jq -r '.importId' "$RESP")
+          wait_for "/apps/$APP_ID/imports/$import_id" "Preview import"
+          imported=$(jq -r '.gitHash // ""' "$RESP")
+          if [ -n "$imported" ] && [ "$GITHUB_EVENT_NAME" = push ] && [[ $GITHUB_SHA != "$imported"* ]]; then
+            echo "::warning::GoDaddy imported ${imported:0:7}, this push was ${GITHUB_SHA:0:7} (a newer push may have landed first)."
+          fi
+
+          echo "Publishing to live"
+          post "/apps/$APP_ID/deployments" '{}'
+          deployment_id=$(jq -r '.deploymentId' "$RESP")
+          if ! wait_for "/apps/$APP_ID/deployments/$deployment_id" "Publish"; then
+            if [[ $(call GET "/apps/$APP_ID/deployments/$deployment_id/logs") == 2?? ]]; then
+              echo "Build log (last 80 lines):"; jq -r '.. | strings' "$RESP" 2>/dev/null | tail -80 || tail -c 6000 "$RESP"
+            fi
+            exit 1
+          fi
+
+          {
+            echo "### Published \`${imported:0:7}\` from \`$BRANCH\` to GoDaddy app \`$APP_ID\`"
+            echo "- Import \`$import_id\`, deployment \`$deployment_id\`"
+          } >> "$GITHUB_STEP_SUMMARY"
