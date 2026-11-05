@@ -170,3 +170,48 @@ test("requests after connect are not held back by the stored-data dump", async (
   releaseDump();
   await connect;
 });
+
+test("web push devices are loaded once the database is reachable, not skipped for good", async () => {
+  const server = new MessageServer(0);
+  const sub = {
+    endpoint: "https://push.example/closed-tab",
+    keys: { p256dh: "p", auth: "a" },
+  };
+  let store = null;
+  server.getStore = async () => store;
+
+  // Database not reachable yet (e.g. right after a restart).
+  await server.hydrateWebPushSubscriptions();
+  assert.equal(server.webPushSubscriptions.size, 0);
+
+  store = {
+    pushSubscriptions: {
+      list: async () => [
+        { endpoint: sub.endpoint, subscription: sub, userId: "user-alice" },
+      ],
+    },
+  };
+  const targets = await server.getAllPushTargets();
+  assert.deepEqual(targets, [{ type: "web", subscription: sub }]);
+});
+
+test("re-registering a browser without a user keeps its known user", async () => {
+  const server = new MessageServer(0);
+  server.webPushHydrated = true;
+  const saved = [];
+  server.getStore = async () => ({
+    pushSubscriptions: { upsert: async (row) => saved.push(row) },
+  });
+  const sub = {
+    endpoint: "https://push.example/tab",
+    keys: { p256dh: "p", auth: "a" },
+  };
+  const record = { type: "web", endpoint: sub.endpoint, subscription: sub };
+
+  await server.persistWebPushSubscription({ ...record, userId: "user-alice" });
+  // Token lookup failed on this connect, so there is no user.
+  await server.persistWebPushSubscription({ ...record, userId: null });
+
+  assert.equal(server.webPushSubscriptions.get(sub.endpoint).userId, "user-alice");
+  assert.equal(saved.at(-1).userId, "user-alice");
+});

@@ -121,7 +121,9 @@ class PushNotificationService {
 
     try {
       await webpush.sendNotification(subscription, payload, {
-        TTL: 60 * 60,
+        // Held by the push service until the browser is running again, so a
+        // fully closed browser still gets the alert when it next starts.
+        TTL: 24 * 60 * 60,
         urgency: 'high',
       });
       return { success: true, channel: 'web' };

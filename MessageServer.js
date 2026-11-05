@@ -2569,13 +2569,16 @@ export class MessageServer extends EventEmitter {
 
   async hydrateWebPushSubscriptions() {
     if (this.webPushHydrated) return;
-    this.webPushHydrated = true;
     try {
       const store = await this.getStore();
+      // Retry on the next push if the database is not reachable yet, so devices
+      // whose app/tab is closed are not forgotten after a server restart.
       if (!store) return;
       const rows = await store.pushSubscriptions.list({ type: "web", limit: 2000 });
       for (const row of rows) {
         if (!row?.endpoint || !row?.subscription) continue;
+        // A registration made since startup is newer than the stored row.
+        if (this.webPushSubscriptions.has(row.endpoint)) continue;
         this.webPushSubscriptions.set(row.endpoint, {
           type: "web",
           endpoint: row.endpoint,
@@ -2585,11 +2588,21 @@ export class MessageServer extends EventEmitter {
           registeredAt: row.registeredAt || Date.now(),
         });
       }
+      this.webPushHydrated = true;
     } catch (_) {}
   }
 
   async persistWebPushSubscription(record) {
     if (!record?.endpoint || !record?.subscription) return;
+    await this.hydrateWebPushSubscriptions();
+    // A connect whose token lookup failed has no user; keep the device's known
+    // user instead of wiping it, or it would stop getting pushes once closed.
+    if (!record.userId) {
+      const previous = this.webPushSubscriptions.get(record.endpoint);
+      if (previous?.userId) {
+        record = { ...record, userId: previous.userId };
+      }
+    }
     this.webPushSubscriptions.set(record.endpoint, record);
     try {
       const store = await this.getStore();
