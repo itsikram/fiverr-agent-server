@@ -15,6 +15,12 @@ import { withHttpLogging } from "./utils/httpLogger.js";
 import { getPrisma } from "./src/db/prisma.js";
 import { createStore } from "./src/db/store.js";
 import { isAdminEmail } from "./src/config/admin.js";
+import {
+  GIG_CATALOG_DOC_PREFIX,
+  normalizeSellerUsername,
+  sanitizeGigCatalog,
+  sanitizeGigUrls,
+} from "./src/utils/gigCatalog.js";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -97,6 +103,9 @@ export class MessageServer extends EventEmitter {
     // Seller profiles (persisted in MySQL)
     this.sellerProfiles = new Map(); // username -> profile
     this.sellerProfile = null; // current (most recently received)
+    // Seller gig catalogs from the extension (lowercase username -> catalog).
+    // Stored as separate "gig-catalog:<username>" rows in seller_profiles.
+    this.sellerGigCatalogs = new Map();
 
     // Local fallback user storage when MySQL is unavailable
     this.localUsers = new Map();
@@ -1831,6 +1840,16 @@ export class MessageServer extends EventEmitter {
     const docs = await store.sellerProfiles.list();
 
     for (const doc of docs) {
+      if (
+        typeof doc._id === "string" &&
+        doc._id.startsWith(GIG_CATALOG_DOC_PREFIX)
+      ) {
+        const catalog = sanitizeGigCatalog(doc.catalog);
+        if (catalog) {
+          this.sellerGigCatalogs.set(catalog.sellerUsername, catalog);
+        }
+        continue;
+      }
       const username =
         doc.username || (typeof doc._id === "string" ? doc._id : null);
       if (username) {
@@ -1921,6 +1940,28 @@ export class MessageServer extends EventEmitter {
         delete payload._id;
         await store.sellerProfiles.replace(username, payload);
       }
+    } catch (error) {}
+  }
+
+  getSellerGigCatalogs() {
+    return Array.from(this.sellerGigCatalogs.values());
+  }
+
+  /** Persist one gig catalog in its own seller_profiles row. */
+  async saveSellerGigCatalog(catalog) {
+    const store = await this.getStore();
+    if (!store || !catalog?.sellerUsername) {
+      return;
+    }
+    try {
+      await store.sellerProfiles.replace(
+        `${GIG_CATALOG_DOC_PREFIX}${catalog.sellerUsername}`,
+        {
+          username: catalog.sellerUsername,
+          kind: "gig_catalog",
+          catalog,
+        },
+      );
     } catch (error) {}
   }
 
@@ -4158,6 +4199,94 @@ export class MessageServer extends EventEmitter {
           message: data.message || "Fetch client details completed",
         }),
       );
+    } else if (msgType === "fetch_gigs") {
+      // App -> extension: read the seller's gigs (packages, prices) from Fiverr.
+      const requestId = String(data.requestId || "").slice(0, 80) || null;
+      const sent = await this.broadcastBrowserCommand({
+        type: "fetch_gigs",
+        requestId,
+        sellerUsername: normalizeSellerUsername(data.sellerUsername) || null,
+        gigUrls: sanitizeGigUrls(data.gigUrls),
+      });
+      if (!sent) {
+        ws.send(
+          JSON.stringify({
+            type: "gig_fetch_status",
+            data: {
+              requestId,
+              status: "error",
+              message:
+                "The browser extension is not connected. Open a Fiverr tab with the extension turned on, then try again.",
+            },
+          }),
+        );
+      }
+      // Success-only ack: error acks are matched to client-detail requests.
+      ws.send(
+        JSON.stringify({
+          type: "ack",
+          status: "success",
+          message: sent ? "Gig fetch forwarded" : "Gig fetch not started",
+        }),
+      );
+    } else if (msgType === "gig_fetch_status") {
+      // Extension -> app: progress or failure while reading gigs.
+      const allowed = ["started", "progress", "error"];
+      const status = allowed.includes(data.status) ? data.status : "progress";
+      const toCount = (value) =>
+        Number.isInteger(value) && value >= 0 && value < 1000 ? value : null;
+      this.broadcastToExpoClients({
+        type: "gig_fetch_status",
+        data: {
+          requestId: String(data.requestId || "").slice(0, 80) || null,
+          status,
+          code: String(data.code || "").slice(0, 40) || null,
+          message: String(data.message || "").slice(0, 300),
+          current: toCount(data.current),
+          total: toCount(data.total),
+        },
+      });
+      ws.send(
+        JSON.stringify({ type: "ack", status: "success", message: "ok" }),
+      );
+    } else if (msgType === "gig_data") {
+      // Extension -> server -> app: the seller's gig catalog.
+      const payload = data.data || data;
+      const catalog =
+        this.clientTypes.get(ws._sessionId) === "expo"
+          ? null
+          : sanitizeGigCatalog(payload);
+      if (!catalog) {
+        ws.send(
+          JSON.stringify({
+            type: "ack",
+            status: "error",
+            message: "Invalid gig catalog",
+          }),
+        );
+        return;
+      }
+      this.sellerGigCatalogs.set(catalog.sellerUsername, catalog);
+      await this.saveSellerGigCatalog(catalog);
+      this.broadcastToExpoClients({
+        type: "gig_catalog",
+        requestId: String(payload.requestId || "").slice(0, 80) || null,
+        data: catalog,
+      });
+      ws.send(
+        JSON.stringify({
+          type: "ack",
+          status: "success",
+          message: `Saved ${catalog.gigs.length} gig(s)`,
+        }),
+      );
+    } else if (msgType === "request_gig_catalogs") {
+      ws.send(
+        JSON.stringify({
+          type: "gig_catalogs",
+          data: this.getSellerGigCatalogs(),
+        }),
+      );
     } else if (msgType === "command_status") {
       const commandType = data.commandType;
       const status = data.status || "unknown";
@@ -4429,6 +4558,15 @@ export class MessageServer extends EventEmitter {
           JSON.stringify({
             type: "seller_profiles",
             data: snapshotSellerProfiles,
+          }),
+        );
+      }
+
+      if (this.sellerGigCatalogs.size > 0) {
+        ws.send(
+          JSON.stringify({
+            type: "gig_catalogs",
+            data: this.getSellerGigCatalogs(),
           }),
         );
       }
